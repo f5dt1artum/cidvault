@@ -42,17 +42,31 @@ func validPin(p pin, now time.Time) bool {
 	return p.expiresAt == nil || p.expiresAt.After(now)
 }
 
+// blockRef holds one unique stored block. refs counts the live objects that
+// reference the block; a block repeated within one object still counts once.
+type blockRef struct {
+	data []byte
+	refs int
+}
+
 // store is an in-process content-addressed object store. Objects are
 // immutable once inserted; inserts and deletes happen under the write lock
-// so readers never observe a partially written object.
+// so readers never observe a partially written object. Blocks are stored
+// once and shared by every object that references them; a block is dropped
+// as soon as no live object references it.
 type store struct {
 	mu      sync.RWMutex
 	objects map[string]*object
+	blocks  map[string]*blockRef
 	pins    map[string]pin
 }
 
 func newStore() *store {
-	return &store{objects: make(map[string]*object), pins: make(map[string]pin)}
+	return &store{
+		objects: make(map[string]*object),
+		blocks:  make(map[string]*blockRef),
+		pins:    make(map[string]pin),
+	}
 }
 
 // chunkCID returns the identifier for one chunk's raw bytes.
@@ -77,7 +91,9 @@ func rootCID(size int, cids []string) string {
 
 // put stores the object, or returns the existing one when the same root
 // identifier is already present. Exactly one concurrent caller observes
-// created == true for a given object.
+// created == true for a given object. Newly stored objects register their
+// unique chunks in the shared block table; repeated chunks within the
+// object and chunks shared with other objects are stored only once.
 func (s *store) put(obj *object) (stored *object, created bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,6 +101,18 @@ func (s *store) put(obj *object) (stored *object, created bool) {
 		return existing, false
 	}
 	s.objects[obj.cid] = obj
+	seen := make(map[string]bool, len(obj.cids))
+	for i, c := range obj.cids {
+		if b, ok := s.blocks[c]; ok {
+			obj.chunks[i] = b.data // share the stored copy
+			if !seen[c] {
+				b.refs++
+			}
+		} else {
+			s.blocks[c] = &blockRef{data: obj.chunks[i], refs: 1}
+		}
+		seen[c] = true
+	}
 	return obj, true
 }
 
@@ -93,6 +121,40 @@ func (s *store) get(cid string) *object {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.objects[cid]
+}
+
+// getBlock returns the raw bytes of a stored block, or nil when no live
+// object references it.
+func (s *store) getBlock(cid string) []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if b, ok := s.blocks[cid]; ok {
+		return b.data
+	}
+	return nil
+}
+
+// storageStats is a consistent snapshot of the store's occupancy.
+type storageStats struct {
+	objects      int
+	logicalBytes int
+	blocks       int
+	storedBytes  int
+}
+
+// stats snapshots object and deduplicated block occupancy under one lock
+// hold, so the four counters always describe the same instant.
+func (s *store) stats() storageStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	st := storageStats{objects: len(s.objects), blocks: len(s.blocks)}
+	for _, obj := range s.objects {
+		st.logicalBytes += obj.size
+	}
+	for _, b := range s.blocks {
+		st.storedBytes += len(b.data)
+	}
+	return st
 }
 
 // setPin pins cid with the given expiration, replacing any previous pin. It
@@ -163,7 +225,9 @@ func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, total
 	sort.Strings(cids)
 	if !dryRun {
 		for _, cid := range cids {
+			obj := s.objects[cid]
 			delete(s.objects, cid)
+			s.releaseBlocks(obj)
 		}
 		for cid, p := range s.pins {
 			if !validPin(p, now) {
@@ -172,6 +236,26 @@ func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, total
 		}
 	}
 	return cids, totalBytes
+}
+
+// releaseBlocks drops the object's block references, removing any block no
+// other live object uses. The caller must hold the write lock.
+func (s *store) releaseBlocks(obj *object) {
+	seen := make(map[string]bool, len(obj.cids))
+	for _, c := range obj.cids {
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		b, ok := s.blocks[c]
+		if !ok {
+			continue
+		}
+		b.refs--
+		if b.refs == 0 {
+			delete(s.blocks, c)
+		}
+	}
 }
 
 // validCID reports whether s has the "sha256:<64 lowercase hex>" shape.

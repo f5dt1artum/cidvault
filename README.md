@@ -27,6 +27,15 @@ go run ./cmd/cidvault
 
 限制与失败语义：单个对象最多 67108864 字节，超限返回 `413` 与 `payload_too_large` 且不留部分对象；媒体类型错误返回 `415` 与 `unsupported_media_type`；路径标识格式错误返回 `400` 与 `invalid_cid`；格式有效但对象不存在返回 `404` 与 `object_not_found`；方法不允许返回 `405` 并带 `Allow` 头。错误正文统一为 `application/json` 的 `{"error":{"code":"..."}}`。
 
+## 块读取与存储统计
+
+块按内容去重存储：同一块在对象内重复或被多个对象共享时只保留一份，统计中也只计一次。
+
+- `GET /v1/blocks/{cid}`：以 `application/octet-stream` 返回块的原始字节，`Content-Length` 为实际块长。只要仍有当前对象引用该块即可读取；标识格式错误返回 `400` 与 `invalid_cid`，格式有效但未被当前对象引用返回 `404` 与 `block_not_found`。
+- `GET /v1/storage/stats`：返回 `{"objects","logicalBytes","blocks","storedBytes"}` 的同一时点一致快照。`objects` 为当前对象数（空对象计入），`logicalBytes` 为这些对象正文长度之和，`blocks` 为被当前对象引用的唯一块数，`storedBytes` 为这些唯一块原始字节之和。重复上传同一对象不改变统计。
+
+正式回收删除对象后，不再被引用的块立即不可读并从统计中移除；仍被其他对象引用的共享块继续可读且只计一次。预览回收（`dryRun=true`）不改变对象、块与统计。
+
 ## 引脚与垃圾回收
 
 对象引脚控制回收保留，内容标识规则不受影响。
