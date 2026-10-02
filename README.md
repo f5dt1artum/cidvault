@@ -12,6 +12,32 @@ go run ./cmd/cidvault
 
 服务默认监听 `127.0.0.1:8080`。可通过 `CIDVAULT_ADDR` 修改监听地址。`GET /healthz` 返回 JSON 健康状态。
 
+## 对象接口
+
+进程内的内容寻址对象库：对象只在当前进程可用，不承诺重启保留；不包含删除、引脚、远端路由和访问控制。
+
+- `POST /v1/objects`：上传正文，`Content-Type` 必须为 `application/octet-stream`。正文按 1048576 字节切分（除末块外均为定长，空正文没有数据块）。块标识为 `sha256:<64 位小写十六进制>`，对块原始字节求 SHA-256；根标识使用同一格式，对“对象总长度 + 有序块标识”的确定性清单求摘要。相同字节得到相同根标识。首次返回 `201`，重复对象返回 `200`。
+- `GET /v1/objects/{cid}`：以 `application/octet-stream` 逐字节返回原文。
+- `GET /v1/objects/{cid}/manifest`：返回清单，足以校验块与根标识并按序还原内容。
+
+上传与清单响应字段：
+
+```json
+{"cid":"sha256:…","size":2200000,"chunkSize":1048576,"chunks":["sha256:…","sha256:…"],"created":true}
+```
+
+约束与错误（错误正文统一为 `application/json`，形如 `{"error":{"code":"..."}}`）：
+
+| 条件 | 状态码 | code |
+| --- | --- | --- |
+| 对象超过 67108864 字节，且不留下部分对象 | 413 | `payload_too_large` |
+| 上传媒体类型不是 `application/octet-stream` | 415 | `unsupported_media_type` |
+| 路径标识格式错误 | 400 | `invalid_cid` |
+| 标识格式正确但对象不存在 | 404 | `object_not_found` |
+| 读取入口使用非 GET、上传入口使用非 POST（带 `Allow` 头） | 405 | `method_not_allowed` |
+
+相同对象并发上传时仅一次响应 `"created":true`，其余复用同一结果；任何读取都不会看到半写入对象。
+
 ## 验证
 
 ```bash

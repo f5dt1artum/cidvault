@@ -7,6 +7,8 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/f5dt1artum/cidvault/internal/store"
 )
 
 // Version is the baseline release identifier.
@@ -30,5 +32,10 @@ func Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(health{Status: "ok", Service: "cidvault", Version: Version})
 	})
+
+	// In-process object store: a fresh store per Handler, so objects are
+	// scoped to the serving process and never survive a restart.
+	registerObjectRoutes(mux, store.New())
+
 	return mux
 }
