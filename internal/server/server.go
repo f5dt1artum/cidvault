@@ -34,5 +34,8 @@ func Handler() http.Handler {
 	mux.HandleFunc("/v1/objects", objects.postObject)
 	mux.HandleFunc("/v1/objects/{cid}", objects.getObject)
 	mux.HandleFunc("/v1/objects/{cid}/manifest", objects.getManifest)
+	mux.HandleFunc("/v1/pins", objects.listPinsHandler)
+	mux.HandleFunc("/v1/pins/{cid}", objects.pinByCID)
+	mux.HandleFunc("/v1/gc", objects.gcHandler)
 	return mux
 }
