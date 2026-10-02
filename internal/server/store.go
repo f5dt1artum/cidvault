@@ -45,14 +45,25 @@ func validPin(p pin, now time.Time) bool {
 // store is an in-process content-addressed object store. Objects are
 // immutable once inserted; inserts and deletes happen under the write lock
 // so readers never observe a partially written object.
+//
+// blocks holds the raw bytes of every chunk referenced by at least one live
+// object, keyed by chunk identifier. A chunk repeated inside one object or
+// shared across objects is stored once. The map is pruned in the same
+// critical section that deletes objects during garbage collection, so the
+// block set and the object set always describe one consistent point.
 type store struct {
 	mu      sync.RWMutex
 	objects map[string]*object
+	blocks  map[string][]byte
 	pins    map[string]pin
 }
 
 func newStore() *store {
-	return &store{objects: make(map[string]*object), pins: make(map[string]pin)}
+	return &store{
+		objects: make(map[string]*object),
+		blocks:  make(map[string][]byte),
+		pins:    make(map[string]pin),
+	}
 }
 
 // chunkCID returns the identifier for one chunk's raw bytes.
@@ -77,12 +88,18 @@ func rootCID(size int, cids []string) string {
 
 // put stores the object, or returns the existing one when the same root
 // identifier is already present. Exactly one concurrent caller observes
-// created == true for a given object.
+// created == true for a given object. Any chunk bytes not already present
+// are registered in the shared block index in the same critical section.
 func (s *store) put(obj *object) (stored *object, created bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.objects[obj.cid]; ok {
 		return existing, false
+	}
+	for i, cid := range obj.cids {
+		if _, ok := s.blocks[cid]; !ok {
+			s.blocks[cid] = obj.chunks[i]
+		}
 	}
 	s.objects[obj.cid] = obj
 	return obj, true
@@ -93,6 +110,15 @@ func (s *store) get(cid string) *object {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.objects[cid]
+}
+
+// blockBytes returns the raw bytes of a chunk referenced by at least one
+// live object, or nil when the identifier is not referenced. The returned
+// slice must not be modified by the caller.
+func (s *store) blockBytes(cid string) []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.blocks[cid]
 }
 
 // setPin pins cid with the given expiration, replacing any previous pin. It
@@ -170,8 +196,58 @@ func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, total
 				delete(s.pins, cid)
 			}
 		}
+		s.pruneBlocksLocked()
 	}
 	return cids, totalBytes
+}
+
+// pruneBlocksLocked drops every block no longer referenced by a live
+// object. Callers must hold s.mu for writing.
+func (s *store) pruneBlocksLocked() {
+	referenced := make(map[string]struct{}, len(s.blocks))
+	for _, obj := range s.objects {
+		for _, cid := range obj.cids {
+			referenced[cid] = struct{}{}
+		}
+	}
+	for cid := range s.blocks {
+		if _, ok := referenced[cid]; !ok {
+			delete(s.blocks, cid)
+		}
+	}
+}
+
+// storageStats is a snapshot of the store at one consistent point.
+type storageStats struct {
+	objects      int
+	logicalBytes int
+	blocks       int
+	storedBytes  int
+}
+
+// stats reports object and deduplicated block totals at one consistent
+// point: objects counts live objects, logicalBytes sums their body lengths,
+// and blocks/storedBytes count each distinct referenced chunk exactly once.
+func (s *store) stats() storageStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var st storageStats
+	seen := make(map[string]struct{}, len(s.blocks))
+	for _, obj := range s.objects {
+		st.objects++
+		st.logicalBytes += obj.size
+		for _, cid := range obj.cids {
+			if _, dup := seen[cid]; dup {
+				continue
+			}
+			seen[cid] = struct{}{}
+			if data, ok := s.blocks[cid]; ok {
+				st.blocks++
+				st.storedBytes += len(data)
+			}
+		}
+	}
+	return st
 }
 
 // validCID reports whether s has the "sha256:<64 lowercase hex>" shape.

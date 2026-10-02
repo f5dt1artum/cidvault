@@ -19,13 +19,15 @@ go run ./cmd/cidvault
 - `POST /v1/objects`：以 `application/octet-stream` 上传原文。正文按 1048576 字节切分（末块可不足，空正文无数据块）。首次接收返回 `201`，重复对象返回 `200`；响应 JSON 为 `{"cid","size","chunkSize","chunks","created"}`，其中 `chunks` 按重建顺序排列，`created` 表示本次是否新增。
 - `GET /v1/objects/{cid}`：以 `application/octet-stream` 返回逐字节一致的原文。
 - `GET /v1/objects/{cid}/manifest`：返回 `{"cid","size","chunkSize","chunks"}`，客户端可据此校验块与根标识并按序还原内容。
+- `GET /v1/blocks/{cid}`：返回清单中某个块的原始字节，`Content-Type` 为 `application/octet-stream`，`Content-Length` 等于该块实际长度。块仅在仍被当前对象引用时可读。
+- `GET /v1/storage/stats`：返回 `{"objects","logicalBytes","blocks","storedBytes"}`。`objects` 为当前对象数（空对象计入），`logicalBytes` 为其正文长度之和；`blocks` 为被当前对象引用的唯一块数，`storedBytes` 为这些唯一块原始字节之和。同一块在对象内重复或被多个对象共享时只计算一次，重复上传同一对象不改变统计。
 
 标识与清单编码：
 
 - 块标识为 `sha256:<64位小写十六进制>`，摘要取块原始字节。
 - 根标识取同一格式，对确定性清单字节求摘要：首行 `size:<对象总长度十进制>\n`，随后每行一个块标识（含 `\n`），按重建顺序排列。例如空对象的清单字节为 `size:0\n`。
 
-限制与失败语义：单个对象最多 67108864 字节，超限返回 `413` 与 `payload_too_large` 且不留部分对象；媒体类型错误返回 `415` 与 `unsupported_media_type`；路径标识格式错误返回 `400` 与 `invalid_cid`；格式有效但对象不存在返回 `404` 与 `object_not_found`；方法不允许返回 `405` 并带 `Allow` 头。错误正文统一为 `application/json` 的 `{"error":{"code":"..."}}`。
+限制与失败语义：单个对象最多 67108864 字节，超限返回 `413` 与 `payload_too_large` 且不留部分对象；媒体类型错误返回 `415` 与 `unsupported_media_type`；路径标识格式错误返回 `400` 与 `invalid_cid`；格式有效但对象不存在返回 `404` 与 `object_not_found`；块标识格式有效但未被当前对象引用返回 `404` 与 `block_not_found`；方法不允许返回 `405` 并带 `Allow` 头。错误正文统一为 `application/json` 的 `{"error":{"code":"..."}}`。
 
 ## 引脚与垃圾回收
 
@@ -34,7 +36,7 @@ go run ./cmd/cidvault
 - `PUT /v1/pins/{cid}`：为已有对象建立或更新引脚。媒体类型须为 `application/json`，正文只可含可选的 `expiresAt`；省略或传 `null` 表示永久保留，非空值须为严格晚于受理时刻的 RFC3339 时间。当前无有效引脚时建立返回 `201`，否则更新返回 `200`；响应为 `{"cid","expiresAt"}`。到期时间格式错误或不在未来返回 `422` 与 `invalid_expiration`；畸形 JSON 或未知字段返回 `400` 与 `invalid_request`；媒体类型不符返回 `415` 与 `unsupported_media_type`；对象不存在返回 `404` 与 `object_not_found`。
 - `GET /v1/pins`：返回 `{"pins":[{"cid","expiresAt"},...]}`，仅含有效引脚，永久项的 `expiresAt` 为 `null`，按 cid 字典序排列；到期引脚不返回。
 - `DELETE /v1/pins/{cid}`：删除成功返回 `204`；引脚不存在或已到期返回 `404` 与 `pin_not_found`。
-- `POST /v1/gc`：回收受理时没有有效引脚的对象（到期引脚等同未引脚，永久或未到期引脚保留）。带 `dryRun=true` 时只预览不删除，`dryRun` 取其他值返回 `400` 与 `invalid_request`。响应为 `{"dryRun","objects","bytes","cids"}`，`objects` 为候选或已删除对象数，`bytes` 为其正文长度之和，`cids` 按字典序排列。被回收对象的正文与清单读取返回 `404` 与 `object_not_found`；重新上传相同内容仍得到原 CID。引脚与回收互为原子：加引脚先成功则同次回收不得删除，回收先删除则加引脚返回 `object_not_found`。
+- `POST /v1/gc`：回收受理时没有有效引脚的对象（到期引脚等同未引脚，永久或未到期引脚保留）。带 `dryRun=true` 时只预览不删除，`dryRun` 取其他值返回 `400` 与 `invalid_request`。响应为 `{"dryRun","objects","bytes","cids"}`，`objects` 为候选或已删除对象数，`bytes` 为其正文长度之和（不按去重块折算），`cids` 按字典序排列。被回收对象的正文与清单读取返回 `404` 与 `object_not_found`；正式回收后不再被任何当前对象引用的块立即不可读并从存储统计中移除，仍被共享引用的块继续可读且只计一次；预览回收不改变对象、块与统计。重新上传相同内容仍得到原 CID。引脚与回收互为原子：加引脚先成功则同次回收不得删除，回收先删除则加引脚返回 `object_not_found`。
 
 ## 验证
 
