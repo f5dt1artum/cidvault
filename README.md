@@ -45,6 +45,13 @@ go run ./cmd/cidvault
 - `DELETE /v1/pins/{cid}`：删除成功返回 `204`；引脚不存在或已到期返回 `404` 与 `pin_not_found`。
 - `POST /v1/gc`：回收受理时没有有效引脚的对象（到期引脚等同未引脚，永久或未到期引脚保留）。带 `dryRun=true` 时只预览不删除，`dryRun` 取其他值返回 `400` 与 `invalid_request`。响应为 `{"dryRun","objects","bytes","cids"}`，`objects` 为候选或已删除对象数，`bytes` 为其正文长度之和，`cids` 按字典序排列。被回收对象的正文与清单读取返回 `404` 与 `object_not_found`；重新上传相同内容仍得到原 CID。引脚与回收互为原子：加引脚先成功则同次回收不得删除，回收先删除则加引脚返回 `object_not_found`。
 
+## 单对象离线包
+
+单对象离线包（bundle）把清单与全部引用块打包为一个 JSON 文档，媒体类型为 `application/vnd.cidvault.bundle+json`，用于对象跨实例搬运；内容标识规则不变。
+
+- `GET /v1/bundles/{cid}`：导出对象。返回 `{"version":1,"root":{"cid","size","chunkSize","chunks"},"blocks":[{"cid","data"},...]}`，其中 `root` 与现有清单一致，`data` 为块原始字节的 RFC 4648 标准 Base64。`blocks` 只收录清单引用的唯一块并按 cid 字典序排列，空对象导出为空数组。路径标识格式错误返回 `400` 与 `invalid_cid`，对象不存在返回 `404` 与 `object_not_found`。
+- `POST /v1/bundles`：导入同一格式的包，媒体类型不符返回 `415` 与 `unsupported_media_type`。服务先完整验证再原子写入并复用已有块：畸形 JSON、尾随内容、缺失、未知或重复字段、字段类型错误、非法 Base64 或包内标识格式错误返回 `400` 与 `invalid_bundle`；`version` 或 `chunkSize` 不支持返回 `422` 与 `unsupported_bundle`；声明或重建大小超限返回 `413` 与 `payload_too_large`；块摘要、块集合（缺块、重复或未引用块）、分块长度、对象长度或根标识校验失败返回 `422` 与 `integrity_check_failed`。任何失败都不改变对象、块、引脚与统计。导入成功响应与普通上传相同：首次插入返回 `201` 且 `created` 为 `true`，已有相同对象返回 `200` 且为 `false`；并发导入同一对象只有一个首次插入。导入不自动建立引脚。
+
 ## 验证
 
 ```bash
