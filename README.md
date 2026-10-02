@@ -12,6 +12,21 @@ go run ./cmd/cidvault
 
 服务默认监听 `127.0.0.1:8080`。可通过 `CIDVAULT_ADDR` 修改监听地址。`GET /healthz` 返回 JSON 健康状态。
 
+## 内容寻址对象库
+
+单进程内存对象库，仅在进程存活期间可用，不承诺重启保留；不包含删除、引脚、远端路由和访问控制。
+
+- `POST /v1/objects`：以 `application/octet-stream` 上传原文。正文按 1048576 字节切分（末块可不足，空正文无数据块）。首次接收返回 `201`，重复对象返回 `200`；响应 JSON 为 `{"cid","size","chunkSize","chunks","created"}`，其中 `chunks` 按重建顺序排列，`created` 表示本次是否新增。
+- `GET /v1/objects/{cid}`：以 `application/octet-stream` 返回逐字节一致的原文。
+- `GET /v1/objects/{cid}/manifest`：返回 `{"cid","size","chunkSize","chunks"}`，客户端可据此校验块与根标识并按序还原内容。
+
+标识与清单编码：
+
+- 块标识为 `sha256:<64位小写十六进制>`，摘要取块原始字节。
+- 根标识取同一格式，对确定性清单字节求摘要：首行 `size:<对象总长度十进制>\n`，随后每行一个块标识（含 `\n`），按重建顺序排列。例如空对象的清单字节为 `size:0\n`。
+
+限制与失败语义：单个对象最多 67108864 字节，超限返回 `413` 与 `payload_too_large` 且不留部分对象；媒体类型错误返回 `415` 与 `unsupported_media_type`；路径标识格式错误返回 `400` 与 `invalid_cid`；格式有效但对象不存在返回 `404` 与 `object_not_found`；方法不允许返回 `405` 并带 `Allow` 头。错误正文统一为 `application/json` 的 `{"error":{"code":"..."}}`。
+
 ## 验证
 
 ```bash
