@@ -49,6 +49,8 @@ func Handler() http.Handler {
 	mux.HandleFunc("/v1/storage/stats", objects.getStorageStats)
 	mux.HandleFunc("/v1/pins", objects.getPins)
 	mux.HandleFunc("/v1/pins/{cid}", objects.pinByID)
+	mux.HandleFunc("/v1/refs/{name}", objects.refByName)
+	mux.HandleFunc("/v1/refs/{name}/object", objects.refObjectByName)
 	mux.HandleFunc("/v1/gc", objects.gc)
 	mux.HandleFunc("/v1/providers/{cid}", providers.providersByCID)
 	mux.HandleFunc("/v1/providers/{cid}/{providerId}", providers.providerByID)
