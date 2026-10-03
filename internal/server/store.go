@@ -60,6 +60,7 @@ type store struct {
 	blocks   map[string]*blockRef
 	pins     map[string]pin
 	metadata map[string][]metadataRevision
+	refs     map[string][]refRevision
 	audit    *auditLog // nil until wired by the HTTP surface
 }
 
@@ -69,6 +70,7 @@ func newStore() *store {
 		blocks:   make(map[string]*blockRef),
 		pins:     make(map[string]pin),
 		metadata: make(map[string][]metadataRevision),
+		refs:     make(map[string][]refRevision),
 	}
 }
 
@@ -343,6 +345,89 @@ func (s *store) metadataAt(cid string, revision int64) (metadataRevision, string
 		return metadataRevision{}, "metadata_revision_not_found"
 	}
 	return history[revision-1], ""
+}
+
+// refRevision is one immutable revision of a named reference. A ref points
+// at an object by cid but creates no pin: the target may be garbage
+// collected while the ref history stays readable. Revisions live in
+// process memory only, take no part in storage statistics, bundles or the
+// audit log, and are not deleted when the target object is collected.
+type refRevision struct {
+	revision  int64
+	cid       string
+	updatedAt time.Time
+}
+
+// commitRef appends one revision for name when expected equals the current
+// revision number (0 before the first write) and cid names a live object.
+// The existence check, revision check and append happen under one write
+// lock, so exactly one of several concurrent writers carrying the same
+// expected revision commits. The returned string is empty on success or the
+// error code to report: object_not_found or revision_conflict. created is
+// true for the first revision of a name. A new revision is recorded even
+// when the cid is unchanged.
+func (s *store) commitRef(name, cid string, expected int64, now time.Time) (rev refRevision, created bool, code string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.objects[cid]; !ok {
+		return refRevision{}, false, "object_not_found"
+	}
+	history := s.refs[name]
+	if int64(len(history)) != expected {
+		return refRevision{}, false, "revision_conflict"
+	}
+	rev = refRevision{revision: expected + 1, cid: cid, updatedAt: now.UTC()}
+	s.refs[name] = append(history, rev)
+	return rev, expected == 0, ""
+}
+
+// refAt returns the current ref revision for name, or the requested
+// historical revision when revision > 0. The returned string is empty on
+// success or the error code to report: ref_not_found or
+// ref_revision_not_found. Ref metadata stays readable after the target
+// object has been garbage collected.
+func (s *store) refAt(name string, revision int64) (refRevision, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	history := s.refs[name]
+	if len(history) == 0 {
+		return refRevision{}, "ref_not_found"
+	}
+	if revision == 0 {
+		return history[len(history)-1], ""
+	}
+	if revision > int64(len(history)) {
+		return refRevision{}, "ref_revision_not_found"
+	}
+	return history[revision-1], ""
+}
+
+// resolveRefObject resolves a ref revision and its target object against a
+// single consistent snapshot of the store: the read lock is held across
+// both the history lookup and the object lookup, so resolution and object
+// reading observe the same instant. It returns the resolved revision (also
+// when the object is gone) and the error code to report: ref_not_found,
+// ref_revision_not_found or reference_target_missing.
+func (s *store) resolveRefObject(name string, revision int64) (rev refRevision, obj *object, code string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	history := s.refs[name]
+	if len(history) == 0 {
+		return refRevision{}, nil, "ref_not_found"
+	}
+	if revision != 0 && revision > int64(len(history)) {
+		return refRevision{}, nil, "ref_revision_not_found"
+	}
+	if revision == 0 {
+		rev = history[len(history)-1]
+	} else {
+		rev = history[revision-1]
+	}
+	obj = s.objects[rev.cid]
+	if obj == nil {
+		return rev, nil, "reference_target_missing"
+	}
+	return rev, obj, ""
 }
 
 // validCID reports whether s has the "sha256:<64 lowercase hex>" shape.

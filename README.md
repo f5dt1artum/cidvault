@@ -129,6 +129,18 @@ go run ./cmd/cidvault
 
 元数据不建立引脚，不计入存储统计或离线包，也不新增审计事件。正式回收对象时其元数据历史随对象原子删除，预览回收（`dryRun=true`）不改变历史；重新上传相同 CID 不恢复旧历史，元数据从修订 1 重新开始。
 
+## 命名引用与修订历史
+
+命名引用把一个名称指向已存对象，不改变对象 CID 与正文。名称以百分号解码一次后的结果为准，须匹配 `[a-z0-9][a-z0-9._-]{0,127}`。每次成功写入生成连续递增的修订号（从 1 开始），即使指向的 CID 未变也新增修订；历史修订可单独读取。
+
+- `PUT /v1/refs/{name}`：媒体类型须为 `application/json`，正文严格为 `{"cid":"...","expectedRevision":N}`，无未知、重复或多余字段。首次发布 `N` 为 0，之后须等于当前修订号；目标对象须在受理时存在。相同 `expectedRevision` 的并发更新仅一个成功，其余返回 `409` 与 `revision_conflict`。首次写入返回 `201`，后续返回 `200`；响应含 `name`、`revision`、`cid` 与 UTC RFC3339Nano 格式的 `updatedAt`。
+- `GET /v1/refs/{name}`：无查询参数返回当前修订；带正十进制 `revision` 参数读取指定历史修订，响应结构与 PUT 相同。
+- `GET /v1/refs/{name}/object`：返回所选修订指向对象的原始字节，给出准确 `Content-Length`，并带 `X-CidVault-CID` 与 `X-CidVault-Ref-Revision` 响应头。名称与历史修订的解析和对象读取在同一一致快照内完成（单次读锁），并发回收不会使一次请求看到不同时点的对象。
+
+失败语义：名称非法返回 `400` 与 `invalid_ref`；PUT 媒体类型不符返回 `415` 与 `unsupported_media_type`；非单个严格 JSON，结构、字段或类型错误，或 `expectedRevision` 不是非负整数返回 `400` 与 `invalid_request`；CID 非法返回 `400` 与 `invalid_cid`；CID 合法但目标对象不存在返回 `404` 与 `object_not_found`；修订冲突返回 `409` 与 `revision_conflict`；名称不存在返回 `404` 与 `ref_not_found`；历史修订不存在返回 `404` 与 `ref_revision_not_found`；GET 的未知或重复参数、非法 `revision` 返回 `400` 与 `invalid_request`。`/v1/refs/{name}` 允许 `GET, PUT`，`/v1/refs/{name}/object` 仅允许 `GET`；其余方法返回 `405`、正确 `Allow` 头与 `method_not_allowed`。
+
+引用不充当引脚、不阻止垃圾回收、不计入存储统计，也不进入离线包或产生审计事件。目标对象被回收后，引用当前与历史信息仍可读取；对象入口对该引用的每个修订固定返回 `424` 与 `reference_target_missing`。重新上传相同内容恢复对象后，引用对象入口随之恢复。引用仅在进程存活期间保留，不承诺重启保留。
+
 ## 验证
 
 ```bash

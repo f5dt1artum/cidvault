@@ -59,13 +59,19 @@ func Handler() http.Handler {
 	// The gateway is dispatched before ServeMux on the raw request target:
 	// ServeMux cleans "."/".." and empty segments with redirects and hands
 	// handlers already-percent-decoded path values, both of which would
-	// violate the gateway's exact single-decoding path contract.
+	// violate the gateway's exact single-decoding path contract. The named
+	// reference routes use the same raw dispatch so each name is decoded
+	// exactly once and an encoded slash cannot be rewritten into another
+	// route.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hasGatewayPrefix(r) {
+		switch {
+		case hasGatewayPrefix(r):
 			objects.gateway(w, r)
-			return
+		case hasRefsPrefix(r):
+			objects.refsDispatch(w, r)
+		default:
+			mux.ServeHTTP(w, r)
 		}
-		mux.ServeHTTP(w, r)
 	})
 }
 
@@ -81,4 +87,18 @@ func hasGatewayPrefix(r *http.Request) bool {
 		target = target[:i]
 	}
 	return strings.HasPrefix(target, gatewayPrefix)
+}
+
+// hasRefsPrefix reports whether the request target names a named-reference
+// route. As with the gateway, the raw target is inspected so the name is
+// percent-decoded exactly once by the dispatcher.
+func hasRefsPrefix(r *http.Request) bool {
+	target := r.RequestURI
+	if target == "" {
+		target = r.URL.EscapedPath()
+	}
+	if i := strings.IndexByte(target, '?'); i >= 0 {
+		target = target[:i]
+	}
+	return strings.HasPrefix(target, refsPrefix)
 }
