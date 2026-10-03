@@ -59,6 +59,7 @@ type store struct {
 	objects map[string]*object
 	blocks  map[string]*blockRef
 	pins    map[string]pin
+	audit   *auditLog // nil until wired by the HTTP surface
 }
 
 func newStore() *store {
@@ -93,11 +94,14 @@ func rootCID(size int, cids []string) string {
 // identifier is already present. Exactly one concurrent caller observes
 // created == true for a given object. Newly stored objects register their
 // unique chunks in the shared block table; repeated chunks within the
-// object and chunks shared with other objects are stored only once.
-func (s *store) put(obj *object) (stored *object, created bool) {
+// object and chunks shared with other objects are stored only once. The
+// audit event for the action is appended under the same lock, so event
+// order matches commit order; providerID is set only for remote fetches.
+func (s *store) put(obj *object, action string, providerID *string) (stored *object, created bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.objects[obj.cid]; ok {
+		s.audit.append(objectAuditRecord(action, existing, false, providerID))
 		return existing, false
 	}
 	s.objects[obj.cid] = obj
@@ -113,6 +117,7 @@ func (s *store) put(obj *object) (stored *object, created bool) {
 		}
 		seen[c] = true
 	}
+	s.audit.append(objectAuditRecord(action, obj, true, providerID))
 	return obj, true
 }
 
@@ -170,6 +175,11 @@ func (s *store) setPin(cid string, expiresAt *time.Time, now time.Time) (created
 	existing, found := s.pins[cid]
 	created = !found || !validPin(existing, now)
 	s.pins[cid] = pin{expiresAt: expiresAt}
+	result := "updated"
+	if created {
+		result = "created"
+	}
+	s.audit.append(auditRecord{action: auditPinPut, result: result, cid: strPtr(cid)})
 	return created, true
 }
 
@@ -184,6 +194,7 @@ func (s *store) removePin(cid string, now time.Time) bool {
 		return false
 	}
 	delete(s.pins, cid)
+	s.audit.append(auditRecord{action: auditPinDelete, result: "deleted", cid: strPtr(cid)})
 	return true
 }
 
@@ -235,6 +246,18 @@ func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, total
 			}
 		}
 	}
+	action := auditGCCollect
+	result := "collected"
+	if dryRun {
+		action = auditGCPreview
+		result = "previewed"
+	}
+	s.audit.append(auditRecord{
+		action:  action,
+		result:  result,
+		objects: intPtr(len(cids)),
+		bytes:   intPtr(totalBytes),
+	})
 	return cids, totalBytes
 }
 

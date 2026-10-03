@@ -84,6 +84,16 @@ go run ./cmd/cidvault
 - 没有有效提供者返回 `404` 与 `no_provider`；所有地址均失败返回 `502` 与 `retrieval_failed`，且不留对象、块、引脚或统计变化。
 - 首个合法原文结束尝试，按普通上传语义原子写入并复用已有块：新建返回 `201` 与 `created=true`，并发请求已写入同一对象时返回 `200` 与 `created=false`，同一 CID 的并发检索至多一个 `201`。远端成功时响应另含实际采用的 `providerId` 与 `address`。导入不自动建立引脚；之后对象、清单、块与统计入口的表现与直接上传一致。检索期间使用受理时快照，记录随后到期或删除不改变本次尝试顺序。
 
+## 审计事件流
+
+进程内审计事件流记录变更与检索入口的成功结果，仅在进程存活期间可用，不承诺重启保留。审计不参与引脚、回收、存储统计或内容寻址；失败请求与审计读取本身不记录。事件在业务状态提交后可见，并发时事件顺序与提交顺序一致。仅保留最近 10000 条，淘汰最旧记录后 `seq` 继续递增且不复用。
+
+- `GET /v1/audit/events`：返回 `{"events":[...],"nextAfter":N,"hasMore":B}`。`events` 来自同一时点快照并按 `seq` 升序；`after` 可选，仅返回序号更大的事件；`limit` 为 1 到 1000 的十进制整数，默认 100。`nextAfter` 取本页最后一条序号，空页取 `after` 或 0；`hasMore` 表示该快照仍有后续事件。尚无事件时返回 `200` 与空数组。
+
+事件字段：`seq` 为严格递增序号；`at` 为 UTC RFC3339Nano 时间；`action` 取 `object.upload`、`bundle.import`、`delta_bundle.import`、`pin.put`、`pin.delete`、`gc.preview`、`gc.collect`、`provider.put`、`provider.delete`、`retrieval.local` 或 `retrieval.fetch`；`result` 取 `created`、`existing`、`updated`、`deleted`、`collected`、`previewed`、`local`、`retrieved_created` 或 `retrieved_existing`；`cid`、`objects`、`bytes`、`providerId` 不适用时为 `null`。对象类操作的 `bytes` 为正文长度，回收操作取响应总字节数；`objects` 仅回收操作适用，`providerId` 仅提供者变更与远端取回适用。
+
+失败语义：非零 `after` 早于当前最早保留事件的前一序号时返回 `410` 与 `audit_cursor_expired`；重复参数、未知查询参数、非法整数或越界 `limit` 返回 `400` 与 `invalid_request`；不支持的方法返回 `405`、`Allow: GET` 与 `method_not_allowed`。
+
 ## 验证
 
 ```bash

@@ -38,6 +38,7 @@ type providerRecord struct {
 type providerDirectory struct {
 	mu      sync.RWMutex
 	records map[string]map[string]providerRecord
+	audit   *auditLog // nil until wired by the HTTP surface
 }
 
 func newProviderDirectory() *providerDirectory {
@@ -62,6 +63,16 @@ func (d *providerDirectory) put(cid, providerID string, addresses []string, expi
 		addresses: append([]string(nil), addresses...),
 		expiresAt: expiresAt,
 	}
+	result := "updated"
+	if created {
+		result = "created"
+	}
+	d.audit.append(auditRecord{
+		action:     auditProviderPut,
+		result:     result,
+		cid:        strPtr(cid),
+		providerID: strPtr(providerID),
+	})
 	return created
 }
 
@@ -108,6 +119,12 @@ func (d *providerDirectory) remove(cid, providerID string, now time.Time) bool {
 	if len(byProvider) == 0 {
 		delete(d.records, cid)
 	}
+	d.audit.append(auditRecord{
+		action:     auditProviderDelete,
+		result:     "deleted",
+		cid:        strPtr(cid),
+		providerID: strPtr(providerID),
+	})
 	return true
 }
 

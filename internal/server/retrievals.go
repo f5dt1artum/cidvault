@@ -60,6 +60,12 @@ func (rv *retriever) postRetrieval(w http.ResponseWriter, r *http.Request) {
 	// An object already stored at acceptance time is served locally; the
 	// network is never touched.
 	if obj := rv.objects.get(cid); obj != nil {
+		rv.objects.audit.append(auditRecord{
+			action: auditRetrievalLocal,
+			result: "local",
+			cid:    strPtr(obj.cid),
+			bytes:  intPtr(obj.size),
+		})
 		writeJSON(w, http.StatusOK, retrievalResponse{
 			CID:       obj.cid,
 			Size:      obj.size,
@@ -86,12 +92,12 @@ func (rv *retriever) postRetrieval(w http.ResponseWriter, r *http.Request) {
 			if obj.cid != cid {
 				continue
 			}
-			stored, created := rv.objects.put(obj)
+			providerID := p.providerID
+			stored, created := rv.objects.put(obj, auditRetrievalFetch, &providerID)
 			status := http.StatusOK
 			if created {
 				status = http.StatusCreated
 			}
-			providerID := p.providerID
 			addr := address
 			writeJSON(w, status, retrievalResponse{
 				CID:        stored.cid,
