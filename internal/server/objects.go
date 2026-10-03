@@ -57,18 +57,7 @@ func (s *store) postObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	obj := &object{size: len(body), chunks: [][]byte{}, cids: []string{}}
-	for start := 0; start < len(body); start += ChunkSize {
-		end := start + ChunkSize
-		if end > len(body) {
-			end = len(body)
-		}
-		chunk := body[start:end]
-		obj.chunks = append(obj.chunks, chunk)
-		obj.cids = append(obj.cids, chunkCID(chunk))
-	}
-	obj.cid = rootCID(obj.size, obj.cids)
-
+	obj := newObject(body)
 	stored, created := s.put(obj)
 	status := http.StatusOK
 	if created {
@@ -81,6 +70,23 @@ func (s *store) postObject(w http.ResponseWriter, r *http.Request) {
 		Chunks:    stored.cids,
 		Created:   created,
 	})
+}
+
+// newObject splits a body into chunks under the fixed rules and derives its
+// root identifier from the resulting manifest.
+func newObject(body []byte) *object {
+	obj := &object{size: len(body), chunks: [][]byte{}, cids: []string{}}
+	for start := 0; start < len(body); start += ChunkSize {
+		end := start + ChunkSize
+		if end > len(body) {
+			end = len(body)
+		}
+		chunk := body[start:end]
+		obj.chunks = append(obj.chunks, chunk)
+		obj.cids = append(obj.cids, chunkCID(chunk))
+	}
+	obj.cid = rootCID(obj.size, obj.cids)
+	return obj
 }
 
 // lookupObject validates the path identifier and resolves the object,

@@ -75,6 +75,15 @@ go run ./cmd/cidvault
 
 失败语义：路径 CID 非法返回 `400` 与 `invalid_cid`；`providerId` 非法返回 `400` 与 `invalid_provider`；PUT 媒体类型不符返回 `415` 与 `unsupported_media_type`；非单个严格 JSON、字段缺失、未知或重复字段及类型错误（含 `null` 元素）返回 `400` 与 `invalid_request`；地址不合规（数量越界、重复、未排序、非绝对 http(s)、含用户信息/片段/空主机等）返回 `422` 与 `invalid_address`；`expiresAt` 格式错误、已到期或超过受理时刻后 24 小时上限返回 `422` 与 `invalid_expiration`。`GET /v1/providers/{cid}` 只允许 GET（`Allow: GET`），单提供者入口允许 `PUT, DELETE`；不支持的方法返回 `405`、正确的 `Allow` 头与 `method_not_allowed`。
 
+## 主动检索
+
+主动检索按 CID 从提供者目录登记的地址取回本地缺失的对象，入口为 `POST /v1/retrievals/{cid}`，不接收请求正文。路径 CID 非法返回 `400` 与 `invalid_cid`；不支持的方法返回 `405`、`Allow: POST` 与 `method_not_allowed`。
+
+- 对象在受理时已存在：不访问网络，返回 `200`，响应与上传相同的 `cid`、`size`、`chunkSize`、`chunks`，另含 `created=false`、`providerId=null`、`address=null`。
+- 本地缺失：服务取得受理时点仍有效的提供者快照，按 `providerId` 字典序及各记录原有地址顺序逐一尝试。每个地址就是完整 URL，以 GET 请求，不拼接路径、不携带调用方认证信息、不跟随重定向。网络失败、超时、非 200 状态、媒体类型非 `application/octet-stream`、正文超过对象大小上限，或按现有分块与根标识规则重算后 CID 不匹配，都只使当前地址失败并继续下一个。
+- 没有有效提供者返回 `404` 与 `no_provider`；所有地址均失败返回 `502` 与 `retrieval_failed`，且不留对象、块、引脚或统计变化。
+- 首个合法原文结束尝试，按普通上传语义原子写入并复用已有块：新建返回 `201` 与 `created=true`，并发请求已写入同一对象时返回 `200` 与 `created=false`，同一 CID 的并发检索至多一个 `201`。远端成功时响应另含实际采用的 `providerId` 与 `address`。导入不自动建立引脚；之后对象、清单、块与统计入口的表现与直接上传一致。检索期间使用受理时快照，记录随后到期或删除不改变本次尝试顺序。
+
 ## 验证
 
 ```bash
