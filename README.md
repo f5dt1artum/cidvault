@@ -54,6 +54,15 @@ go run ./cmd/cidvault
 
 失败语义：媒体类型缺失或不符返回 `415` 与 `unsupported_media_type`；畸形 JSON、尾随内容、缺失、未知或重复字段、字段类型错误、非法 Base64 或包内标识格式错误返回 `400` 与 `invalid_bundle`；`version` 或 `chunkSize` 不支持返回 `422` 与 `unsupported_bundle`；声明或重建大小超限返回 `413` 与 `payload_too_large`；摘要、块集合、分块长度、对象长度或根标识校验失败返回 `422` 与 `integrity_check_failed`。任何失败都不改变对象、块、引脚或统计。
 
+## 跨实例增量离线包
+
+增量离线包只搬运接收方尚未持有的块，媒体类型为 `application/vnd.cidvault.delta-bundle+json`。包体结构与完整离线包相同：`version` 固定为 1，`root` 沿用现有清单，`blocks` 为清单引用但接收方未持有的唯一块，按块标识字典序排列，全部命中时为空数组。
+
+- `POST /v1/delta-bundles/{cid}`：导出差量包。请求媒体类型须为 `application/json`，正文为 `{"have":[...]}`，列出接收方已有的块标识；清单未引用的条目忽略。成功返回 `200` 与增量包。正文结构或字段非法、标识重复或格式错误返回 `400` 与 `invalid_request`；媒体类型不符返回 `415` 与 `unsupported_media_type`；路径标识格式错误返回 `400` 与 `invalid_cid`；对象不存在返回 `404` 与 `object_not_found`。
+- `POST /v1/delta-bundles`：导入增量包。服务结合本地仍被对象引用的块与包内块重建对象，完整校验后原子写入并复用已有块；所需本地块不存在返回 `422` 与 `missing_block`。响应与普通上传相同：首次创建返回 `201` 且 `created` 为 `true`，已有对象返回 `200` 与 `false`；导入不建立引脚，块继续去重，并发导入同一根标识仅一个请求首次创建。包保留清单块顺序与重复引用，空对象允许空 `blocks`；导入后的原文、清单、块读取与统计与直接上传一致。
+
+失败语义与完整包对应：非单个严格 JSON、字段缺失、重复、未知或类型错误、非法 Base64 或包内标识格式错误返回 `400` 与 `invalid_delta_bundle`；`version` 或 `chunkSize` 不支持返回 `422` 与 `unsupported_delta_bundle`；声明或重建大小超限返回 `413` 与 `payload_too_large`；块摘要、块集合、分块长度、对象长度或根标识不一致返回 `422` 与 `integrity_check_failed`。任何失败都不改变对象、块、引脚或统计。两个入口不支持的方法返回 `405`、对应 `Allow` 头与 `method_not_allowed`。
+
 ## 验证
 
 ```bash

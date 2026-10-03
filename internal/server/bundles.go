@@ -149,12 +149,32 @@ func (s *store) postBundle(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// parseBundle fully validates a bundle body and, on success, returns the
-// object ready to store. On failure it returns the error code and HTTP
-// status to report; the store is never touched on the failure path.
+// bundleErrors carries the error codes a bundle flavour reports. missing is
+// empty for full bundles, where a block absent from the bundle is an
+// integrity failure; delta bundles set it to the code reported when a block
+// is neither in the bundle nor in the local store.
+type bundleErrors struct {
+	invalid     string
+	unsupported string
+	missing     string
+}
+
+// fullBundleErrors are the error codes of the complete single-object bundle.
+var fullBundleErrors = bundleErrors{invalid: "invalid_bundle", unsupported: "unsupported_bundle"}
+
+// parseBundle fully validates a complete bundle body; see parseBundleBody.
 func parseBundle(body []byte) (obj *object, code string, status int) {
+	return parseBundleBody(body, fullBundleErrors, nil)
+}
+
+// parseBundleBody fully validates a bundle body and, on success, returns the
+// object ready to store. On failure it returns the error code and HTTP
+// status to report; the store is never touched on the failure path. Blocks
+// the manifest references but the bundle does not carry are obtained from
+// resolve; a nil resolve means the bundle must be complete on its own.
+func parseBundleBody(body []byte, codes bundleErrors, resolve func(cid string) []byte) (obj *object, code string, status int) {
 	invalid := func() (*object, string, int) {
-		return nil, "invalid_bundle", http.StatusBadRequest
+		return nil, codes.invalid, http.StatusBadRequest
 	}
 	integrity := func() (*object, string, int) {
 		return nil, "integrity_check_failed", http.StatusUnprocessableEntity
@@ -186,14 +206,14 @@ func parseBundle(body []byte) (obj *object, code string, status int) {
 	version, err := parseInt(*doc.Version)
 	if err != nil {
 		if errors.Is(err, strconv.ErrRange) {
-			return nil, "unsupported_bundle", http.StatusUnprocessableEntity
+			return nil, codes.unsupported, http.StatusUnprocessableEntity
 		}
 		return invalid()
 	}
 	chunkSize, err := parseInt(*doc.Root.ChunkSize)
 	if err != nil {
 		if errors.Is(err, strconv.ErrRange) {
-			return nil, "unsupported_bundle", http.StatusUnprocessableEntity
+			return nil, codes.unsupported, http.StatusUnprocessableEntity
 		}
 		return invalid()
 	}
@@ -226,7 +246,7 @@ func parseBundle(body []byte) (obj *object, code string, status int) {
 	}
 
 	if version != bundleVersion || chunkSize != ChunkSize {
-		return nil, "unsupported_bundle", http.StatusUnprocessableEntity
+		return nil, codes.unsupported, http.StatusUnprocessableEntity
 	}
 	if size > MaxObjectSize {
 		return nil, "payload_too_large", http.StatusRequestEntityTooLarge
@@ -235,8 +255,10 @@ func parseBundle(body []byte) (obj *object, code string, status int) {
 		return integrity()
 	}
 
-	// The block set must be exactly the unique identifiers the manifest
-	// references: no duplicates, none missing, none unreferenced.
+	// The bundle must not repeat a block or carry a block the manifest does
+	// not reference. Blocks the manifest references but the bundle omits are
+	// resolved below. Duplicates are tracked separately because blockData
+	// collapses them while decoding.
 	referenced := make(map[string]bool, len(*doc.Root.Chunks))
 	for _, c := range *doc.Root.Chunks {
 		referenced[c] = true
@@ -251,17 +273,28 @@ func parseBundle(body []byte) (obj *object, code string, status int) {
 			return integrity()
 		}
 	}
-	for c := range referenced {
-		if !seen[c] {
-			return integrity()
-		}
-	}
 
 	// Every block identifier must be the digest of its decoded bytes.
 	for cid, data := range blockData {
 		if chunkCID(data) != cid {
 			return integrity()
 		}
+	}
+
+	// A complete bundle carries every referenced block; a delta bundle
+	// resolves the rest against the local store and reports a miss as such.
+	for c := range referenced {
+		if _, ok := blockData[c]; ok {
+			continue
+		}
+		if resolve == nil {
+			return integrity()
+		}
+		data := resolve(c)
+		if data == nil {
+			return nil, codes.missing, http.StatusUnprocessableEntity
+		}
+		blockData[c] = data
 	}
 
 	// Rebuild the body in manifest order under the fixed chunking rules:
