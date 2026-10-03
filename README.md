@@ -84,6 +84,16 @@ go run ./cmd/cidvault
 - 没有有效提供者返回 `404` 与 `no_provider`；所有地址均失败返回 `502` 与 `retrieval_failed`，且不留对象、块、引脚或统计变化。
 - 首个合法原文结束尝试，按普通上传语义原子写入并复用已有块：新建返回 `201` 与 `created=true`，并发请求已写入同一对象时返回 `200` 与 `created=false`，同一 CID 的并发检索至多一个 `201`。远端成功时响应另含实际采用的 `providerId` 与 `address`。导入不自动建立引脚；之后对象、清单、块与统计入口的表现与直接上传一致。检索期间使用受理时快照，记录随后到期或删除不改变本次尝试顺序。
 
+## 可检索性证明
+
+可检索性证明是只读入口，调用方以随机挑战要求服务证明本地持有某对象的块数据，入口为 `POST /v1/retrievability-proofs/{cid}`。请求媒体类型须为 `application/json`，正文严格为 `{"nonce":"...","samples":N}`：`nonce` 为规范 RFC 4648 标准 Base64（含填充），解码长度 16 至 64 字节；`samples` 为 1 至 16 的整数。
+
+成功返回 `200`，响应为 `{"cid","nonce","requestedSamples","entries"}`：`nonce` 为规范化后的挑战值，`requestedSamples` 回显请求的 `samples`，`entries` 含 `min(samples, 清单位置数)` 项并按清单 `index` 升序，每项为 `{"index","cid","data"}`，`data` 为该位置原始块的标准 Base64。空对象返回空数组；重复块的每个清单位置分别参与抽样。
+
+抽样位置可由客户端独立复算：为每个清单位置计算 SHA-256，输入按顺序拼接 ASCII 字节 `cidvault-retrievability-v1`、换行、根 cid、换行、规范化 nonce、换行、十进制 `index`、换行；按摘要字节无符号字典序排列，摘要相同按 `index` 升序，取前 `samples` 个位置。调用方可用公开清单核对选位，并以 `data` 重算块 cid 确认位置归属。一次请求读取同一时点的对象、清单与块；并发回收时请求只能完整成功或返回对象不存在，不出现缺项、错配或部分响应。
+
+失败语义：路径 CID 非法返回 `400` 与 `invalid_cid`；对象不存在返回 `404` 与 `object_not_found`；媒体类型缺失或不符返回 `415` 与 `unsupported_media_type`；非单个严格 JSON、字段缺失、未知、重复或类型错误返回 `400` 与 `invalid_request`；`nonce` 非规范 Base64 或解码长度越界返回 `422` 与 `invalid_nonce`；`samples` 越界返回 `422` 与 `invalid_sample_count`；不支持的方法返回 `405`、`Allow: POST` 与 `method_not_allowed`。此入口不建立引脚、不写审计事件，也不改变对象、块、提供者或存储统计。
+
 ## 只读网关
 
 只读网关在现有对象库上按路径逐层解析已存目录对象，最终取得文件或子目录，并沿用内容标识、引脚与提供者语义（引脚与回收照常作用于被引用对象；网关本身不发起远端检索、不建立引脚、不改变统计）。
