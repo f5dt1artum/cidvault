@@ -24,6 +24,7 @@ func Handler() http.Handler {
 	audit := newAuditLog()
 	objects := newStore()
 	objects.audit = audit
+	sealed := newSealedStore()
 	providers := newProviderDirectory()
 	providers.audit = audit
 	retriever := newRetriever(objects, providers)
@@ -38,6 +39,9 @@ func Handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(health{Status: "ok", Service: "cidvault", Version: Version})
 	})
 	mux.HandleFunc("/v1/objects", objects.postObject)
+	mux.HandleFunc("/v1/sealed-objects", sealed.postSealedObject)
+	mux.HandleFunc("/v1/sealed-objects/{cid}", sealed.sealedObjectByID)
+	mux.HandleFunc("/v1/sealed-objects/{cid}/envelope", sealed.getSealedEnvelope)
 	mux.HandleFunc("/v1/objects/{cid}", objects.getObject)
 	mux.HandleFunc("/v1/objects/{cid}/manifest", objects.getManifest)
 	mux.HandleFunc("/v1/objects/{cid}/metadata", objects.metadataByID)

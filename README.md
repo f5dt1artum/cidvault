@@ -141,6 +141,19 @@ go run ./cmd/cidvault
 
 引用不充当引脚、不阻止垃圾回收、不计入存储统计，也不进入离线包或产生审计事件。目标对象被回收后，引用当前与历史信息仍可读取；对象入口对该引用的每个修订固定返回 `424` 与 `reference_target_missing`。重新上传相同内容恢复对象后，引用对象入口随之恢复。引用仅在进程存活期间保留，不承诺重启保留。
 
+## 加密封装对象
+
+加密封装对象与公开明文对象库完全隔离：调用方在 `X-CidVault-Key` 头提供密钥，服务只保存每次随机加密后的封装，内存中不保留密钥或原文。封装对象仅在进程内存中保留、不承诺重启保留，不参与既有对象生命周期（分块、引脚、垃圾回收）、提供者目录、检索、离线包、审计事件或存储统计；既有入口行为保持不变。
+
+- `POST /v1/sealed-objects`：请求媒体类型须为 `application/octet-stream`，正文沿用 67108864 字节上限。`X-CidVault-Key` 须为 RFC 4648 标准 Base64（含规范填充）编码的 32 字节密钥。服务使用 AES-256-GCM，每次请求新生成 12 字节 nonce，关联数据为 ASCII 字节 `cidvault-sealed-v1\nsize:<原文长度十进制>\n`。CID 沿用 `sha256:<64位小写十六进制>` 格式，对关联数据、nonce 与含 GCM 认证标签的密文依次拼接求 SHA-256。成功返回 `201` 与 `{"cid","size","algorithm"}`，`algorithm` 固定为 `AES-256-GCM`。
+- `GET /v1/sealed-objects/{cid}`：携带正确密钥时以 `application/octet-stream` 返回逐字节一致的原文，给出准确 `Content-Length`，并带 `Cache-Control: no-store`。
+- `GET /v1/sealed-objects/{cid}/envelope`：无需密钥。返回媒体类型 `application/vnd.cidvault.sealed+json`，正文严格为 `{"version":1,"algorithm","cid","size","nonce","ciphertext"}`；`nonce` 与 `ciphertext`（含认证标签）均为标准 Base64。调用方可据此重算并核对 CID，并在链下独立解密，服务不因此暴露原文。
+- `DELETE /v1/sealed-objects/{cid}`：要求正确密钥，认证通过后删除，成功返回 `204`。删除之后再读取或删除均返回 `404` 与 `sealed_object_not_found`。
+
+并发语义：封装的插入与删除在独立锁下原子完成，读取要么得到完整原文要么得到不存在，不会出现部分内容；同一 CID 的并发删除恰好一个成功，其余返回 `sealed_object_not_found`。
+
+失败语义：缺少密钥返回 `401` 与 `key_required`，并带 `WWW-Authenticate: CidVaultKey`；密钥存在但不是规范标准 Base64 或解码后不是 32 字节返回 `400` 与 `invalid_key`；密钥可解析但认证失败返回 `403` 与 `access_denied`。POST 媒体类型缺失或错误返回 `415` 与 `unsupported_media_type`，正文超限返回 `413` 与 `payload_too_large`；路径 CID 格式非法返回 `400` 与 `invalid_cid`；格式合法但封装不存在（含已删除）返回 `404` 与 `sealed_object_not_found`。集合入口仅允许 `POST`（`Allow: POST`），对象入口允许 `GET, DELETE`，封装入口仅允许 `GET`（`Allow: GET`）；其余方法返回 `405`、正确 `Allow` 头与 `method_not_allowed`。错误正文统一为 `application/json` 的 `{"error":{"code":"..."}}`。任何失败都不留下封装状态。
+
 ## 验证
 
 ```bash
