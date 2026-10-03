@@ -58,7 +58,7 @@ func (s *store) postObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	obj := newObject(body)
-	stored, created := s.put(obj)
+	stored, created := s.put(obj, auditObjectUpload, nil)
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated

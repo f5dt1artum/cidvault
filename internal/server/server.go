@@ -20,8 +20,11 @@ type health struct {
 
 // Handler returns the HTTP surface served by the baseline.
 func Handler() http.Handler {
+	audit := newAuditLog()
 	objects := newStore()
+	objects.audit = audit
 	providers := newProviderDirectory()
+	providers.audit = audit
 	retriever := newRetriever(objects, providers)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -48,5 +51,6 @@ func Handler() http.Handler {
 	mux.HandleFunc("/v1/providers/{cid}", providers.providersByCID)
 	mux.HandleFunc("/v1/providers/{cid}/{providerId}", providers.providerByID)
 	mux.HandleFunc("/v1/retrievals/{cid}", retriever.postRetrieval)
+	mux.HandleFunc("/v1/audit/events", audit.getEvents)
 	return mux
 }

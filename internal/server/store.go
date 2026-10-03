@@ -53,12 +53,14 @@ type blockRef struct {
 // immutable once inserted; inserts and deletes happen under the write lock
 // so readers never observe a partially written object. Blocks are stored
 // once and shared by every object that references them; a block is dropped
-// as soon as no live object references it.
+// as soon as no live object references it. When audit is set, every
+// successful mutation is recorded under the same lock that commits it.
 type store struct {
 	mu      sync.RWMutex
 	objects map[string]*object
 	blocks  map[string]*blockRef
 	pins    map[string]pin
+	audit   *auditLog
 }
 
 func newStore() *store {
@@ -93,11 +95,15 @@ func rootCID(size int, cids []string) string {
 // identifier is already present. Exactly one concurrent caller observes
 // created == true for a given object. Newly stored objects register their
 // unique chunks in the shared block table; repeated chunks within the
-// object and chunks shared with other objects are stored only once.
-func (s *store) put(obj *object) (stored *object, created bool) {
+// object and chunks shared with other objects are stored only once. When
+// action is non-empty the successful commit is audited with that action and
+// the given provider (nil for local writes) under the same lock, so the
+// event order matches the commit order.
+func (s *store) put(obj *object, action string, providerID *string) (stored *object, created bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.objects[obj.cid]; ok {
+		s.recordObjectEvent(action, existing, false, providerID)
 		return existing, false
 	}
 	s.objects[obj.cid] = obj
@@ -113,7 +119,25 @@ func (s *store) put(obj *object) (stored *object, created bool) {
 		}
 		seen[c] = true
 	}
+	s.recordObjectEvent(action, obj, true, providerID)
 	return obj, true
+}
+
+// recordObjectEvent audits a successful object commit. The caller must hold
+// the write lock.
+func (s *store) recordObjectEvent(action string, obj *object, created bool, providerID *string) {
+	if s.audit == nil || action == "" {
+		return
+	}
+	s.audit.append(objectAuditEvent(action, objectResult(action, created), obj.cid, obj.size, providerID))
+}
+
+// recordLocalRetrieval audits a retrieval served from the local store.
+func (s *store) recordLocalRetrieval(obj *object) {
+	if s.audit == nil {
+		return
+	}
+	s.audit.append(objectAuditEvent(auditRetrievalLocal, "local", obj.cid, obj.size, nil))
 }
 
 // get returns the object for a root identifier, or nil when absent.
@@ -170,6 +194,13 @@ func (s *store) setPin(cid string, expiresAt *time.Time, now time.Time) (created
 	existing, found := s.pins[cid]
 	created = !found || !validPin(existing, now)
 	s.pins[cid] = pin{expiresAt: expiresAt}
+	if s.audit != nil {
+		result := "updated"
+		if created {
+			result = "created"
+		}
+		s.audit.append(pinAuditEvent(auditPinPut, result, cid))
+	}
 	return created, true
 }
 
@@ -184,6 +215,9 @@ func (s *store) removePin(cid string, now time.Time) bool {
 		return false
 	}
 	delete(s.pins, cid)
+	if s.audit != nil {
+		s.audit.append(pinAuditEvent(auditPinDelete, "deleted", cid))
+	}
 	return true
 }
 
@@ -233,6 +267,13 @@ func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, total
 			if !validPin(p, now) {
 				delete(s.pins, cid)
 			}
+		}
+	}
+	if s.audit != nil {
+		if dryRun {
+			s.audit.append(gcAuditEvent(auditGCPreview, "previewed", len(cids), totalBytes))
+		} else {
+			s.audit.append(gcAuditEvent(auditGCCollect, "collected", len(cids), totalBytes))
 		}
 	}
 	return cids, totalBytes

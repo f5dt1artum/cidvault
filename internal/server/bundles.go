@@ -135,7 +135,7 @@ func (s *store) postBundle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, code)
 		return
 	}
-	stored, created := s.put(obj)
+	stored, created := s.put(obj, auditBundleImport, nil)
 	respStatus := http.StatusOK
 	if created {
 		respStatus = http.StatusCreated

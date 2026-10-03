@@ -146,7 +146,7 @@ func (s *store) postDeltaBundle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, code)
 		return
 	}
-	stored, created := s.put(obj)
+	stored, created := s.put(obj, auditDeltaBundleImport, nil)
 	respStatus := http.StatusOK
 	if created {
 		respStatus = http.StatusCreated

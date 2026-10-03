@@ -34,10 +34,12 @@ type providerRecord struct {
 // CID and then provider ID. Publishing a record does not require the object
 // to be stored locally; the directory takes no part in pinning, garbage
 // collection or storage statistics, and records are not retained across
-// restarts.
+// restarts. When audit is set, every successful mutation is recorded under
+// the same lock that commits it.
 type providerDirectory struct {
 	mu      sync.RWMutex
 	records map[string]map[string]providerRecord
+	audit   *auditLog
 }
 
 func newProviderDirectory() *providerDirectory {
@@ -61,6 +63,13 @@ func (d *providerDirectory) put(cid, providerID string, addresses []string, expi
 	byProvider[providerID] = providerRecord{
 		addresses: append([]string(nil), addresses...),
 		expiresAt: expiresAt,
+	}
+	if d.audit != nil {
+		result := "updated"
+		if created {
+			result = "created"
+		}
+		d.audit.append(providerAuditEvent(auditProviderPut, result, cid, providerID))
 	}
 	return created
 }
@@ -107,6 +116,9 @@ func (d *providerDirectory) remove(cid, providerID string, now time.Time) bool {
 	delete(byProvider, providerID)
 	if len(byProvider) == 0 {
 		delete(d.records, cid)
+	}
+	if d.audit != nil {
+		d.audit.append(providerAuditEvent(auditProviderDelete, "deleted", cid, providerID))
 	}
 	return true
 }
