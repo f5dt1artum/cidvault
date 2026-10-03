@@ -37,6 +37,8 @@ func Handler() http.Handler {
 	mux.HandleFunc("/v1/blocks/{cid}", objects.getBlockByID)
 	mux.HandleFunc("/v1/bundles", objects.postBundle)
 	mux.HandleFunc("/v1/bundles/{cid}", objects.getBundle)
+	mux.HandleFunc("/v1/delta-bundles", objects.postDeltaBundle)
+	mux.HandleFunc("/v1/delta-bundles/{cid}", objects.postDeltaBundleByID)
 	mux.HandleFunc("/v1/storage/stats", objects.getStorageStats)
 	mux.HandleFunc("/v1/pins", objects.getPins)
 	mux.HandleFunc("/v1/pins/{cid}", objects.pinByID)
