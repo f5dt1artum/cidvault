@@ -7,6 +7,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // Version is the baseline release identifier.
@@ -52,5 +53,14 @@ func Handler() http.Handler {
 	mux.HandleFunc("/v1/providers/{cid}/{providerId}", providers.providerByID)
 	mux.HandleFunc("/v1/retrievals/{cid}", retriever.postRetrieval)
 	mux.HandleFunc("/v1/audit/events", audit.getEvents)
-	return mux
+	// The gateway parses its own escaped path so that empty and dot
+	// segments reach it as invalid_path instead of being redirected by the
+	// mux's path cleaning.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.EscapedPath(), gatewayPathPrefix) {
+			objects.gateway(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
