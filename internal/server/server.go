@@ -52,6 +52,7 @@ func Handler() http.Handler {
 	mux.HandleFunc("/v1/providers/{cid}", providers.providersByCID)
 	mux.HandleFunc("/v1/providers/{cid}/{providerId}", providers.providerByID)
 	mux.HandleFunc("/v1/retrievals/{cid}", retriever.postRetrieval)
+	mux.HandleFunc("/v1/retrievability-proofs/{cid}", objects.postRetrievabilityProof)
 	mux.HandleFunc("/v1/audit/events", audit.getEvents)
 
 	// The gateway is dispatched before ServeMux on the raw request target:
