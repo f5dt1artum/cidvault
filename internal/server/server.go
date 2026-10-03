@@ -7,6 +7,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // Version is the baseline release identifier.
@@ -52,5 +53,30 @@ func Handler() http.Handler {
 	mux.HandleFunc("/v1/providers/{cid}/{providerId}", providers.providerByID)
 	mux.HandleFunc("/v1/retrievals/{cid}", retriever.postRetrieval)
 	mux.HandleFunc("/v1/audit/events", audit.getEvents)
-	return mux
+
+	// The gateway is dispatched before ServeMux on the raw request target:
+	// ServeMux cleans "."/".." and empty segments with redirects and hands
+	// handlers already-percent-decoded path values, both of which would
+	// violate the gateway's exact single-decoding path contract.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hasGatewayPrefix(r) {
+			objects.gateway(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// hasGatewayPrefix reports whether the request target names a gateway route.
+// The raw target is inspected (query stripped) so percent-encoded slashes and
+// dots survive untouched.
+func hasGatewayPrefix(r *http.Request) bool {
+	target := r.RequestURI
+	if target == "" {
+		target = r.URL.EscapedPath()
+	}
+	if i := strings.IndexByte(target, '?'); i >= 0 {
+		target = target[:i]
+	}
+	return strings.HasPrefix(target, gatewayPrefix)
 }
