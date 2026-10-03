@@ -63,6 +63,16 @@ go run ./cmd/cidvault
 
 成功导入沿用普通上传响应：首次创建返回 `201` 且 `created` 为 `true`，已有对象返回 `200` 与 `false`；导入不建立引脚，块继续跨对象去重，并发导入同一根 CID 仅一个请求首次创建。导入后的原文、清单、块读取与统计与直接上传相同；空对象允许空 `blocks`（此时无需任何块）。两个新入口对不支持的方法返回 `405`、对应 `Allow` 头与 `method_not_allowed`。
 
+## 提供者目录
+
+提供者目录让节点按内容标识发布访问位置。目录不要求本机存有对象，不参与引脚、垃圾回收或存储统计，记录仅存于进程内存，不承诺重启保留。
+
+- `PUT /v1/providers/{cid}/{providerId}`：发布或更新一个提供者记录。媒体类型须为 `application/json`，正文严格为 `{"addresses":[...],"expiresAt":"..."}`，不得缺失、含未知或重复字段，字段类型须正确。`providerId` 为 1 至 64 个小写字母、数字或连字符且首尾为字母或数字；`addresses` 含 1 至 16 个互不重复的绝对 http 或 https URL，禁止用户信息、片段和空主机，响应按字符串排序；`expiresAt` 为晚于受理时刻且不超过其后 24 小时的 RFC3339 时间。首次发布或旧记录已到期返回 `201`，更新有效记录返回 `200`；响应为包含 `providerId`、`addresses` 和 `expiresAt` 的完整记录。
+- `GET /v1/providers/{cid}`：返回 `{"cid":"...","providers":[...]}`，只含受理时有效的记录并按 `providerId` 排序；没有记录（或对象不在本机）时返回 `200` 与空数组。查询得到同一时点快照。
+- `DELETE /v1/providers/{cid}/{providerId}`：删除有效记录并返回 `204`；记录不存在或已到期返回 `404` 与 `provider_not_found`。
+
+所有操作与到期判断并发安全，同一键的并发首次发布只有一个 `201`，到期项不会再次出现。失败语义：CID 非法返回 `400` 与 `invalid_cid`；`providerId` 非法返回 `400` 与 `invalid_provider`；媒体类型不符返回 `415` 与 `unsupported_media_type`；非单个严格 JSON、字段缺失、未知或重复及类型错误返回 `400` 与 `invalid_request`；地址不合规（数量越界、重复、非绝对 http/https URL、含用户信息、片段或空主机）返回 `422` 与 `invalid_address`；时间格式错误、已到期或超过 24 小时上限返回 `422` 与 `invalid_expiration`。不支持的方法返回 `405`、正确的 `Allow` 头与 `method_not_allowed`。
+
 ## 验证
 
 ```bash
