@@ -40,6 +40,7 @@ func Handler() http.Handler {
 	mux.HandleFunc("/v1/objects", objects.postObject)
 	mux.HandleFunc("/v1/objects/{cid}", objects.getObject)
 	mux.HandleFunc("/v1/objects/{cid}/manifest", objects.getManifest)
+	mux.HandleFunc("/v1/objects/{cid}/metadata", objects.metadataByID)
 	mux.HandleFunc("/v1/blocks/{cid}", objects.getBlockByID)
 	mux.HandleFunc("/v1/bundles", objects.postBundle)
 	mux.HandleFunc("/v1/bundles/{cid}", objects.getBundle)

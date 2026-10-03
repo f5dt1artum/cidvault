@@ -55,18 +55,20 @@ type blockRef struct {
 // once and shared by every object that references them; a block is dropped
 // as soon as no live object references it.
 type store struct {
-	mu      sync.RWMutex
-	objects map[string]*object
-	blocks  map[string]*blockRef
-	pins    map[string]pin
-	audit   *auditLog // nil until wired by the HTTP surface
+	mu       sync.RWMutex
+	objects  map[string]*object
+	blocks   map[string]*blockRef
+	pins     map[string]pin
+	metadata map[string]*metadataHistory
+	audit    *auditLog // nil until wired by the HTTP surface
 }
 
 func newStore() *store {
 	return &store{
-		objects: make(map[string]*object),
-		blocks:  make(map[string]*blockRef),
-		pins:    make(map[string]pin),
+		objects:  make(map[string]*object),
+		blocks:   make(map[string]*blockRef),
+		pins:     make(map[string]pin),
+		metadata: make(map[string]*metadataHistory),
 	}
 }
 
@@ -220,8 +222,10 @@ func (s *store) listPins(now time.Time) []pinEntry {
 
 // collectGarbage removes every object with no valid pin in force at now, or
 // only counts them when dryRun is true. It returns the affected cids in
-// lexical order and the sum of their body sizes. The sweep is atomic with
-// respect to pin updates and object reads.
+// lexical order and the sum of their body sizes. Removal also drops the
+// object's metadata history in the same lock hold, so the two never diverge;
+// a dry run changes neither. The sweep is atomic with respect to pin updates
+// and object reads.
 func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, totalBytes int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -238,6 +242,7 @@ func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, total
 		for _, cid := range cids {
 			obj := s.objects[cid]
 			delete(s.objects, cid)
+			delete(s.metadata, cid)
 			s.releaseBlocks(obj)
 		}
 		for cid, p := range s.pins {

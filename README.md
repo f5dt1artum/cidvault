@@ -106,6 +106,15 @@ go run ./cmd/cidvault
 
 失败语义：根 CID 非法返回 `400` 与 `invalid_cid`；路径存在非法转义、解码非 UTF-8、空段，或解码结果含斜杠/反斜杠、等于 `.`/`..`、超过 64 段返回 `400` 与 `invalid_path`；根对象缺失返回 `404` 与 `object_not_found`；某层条目不存在返回 `404` 与 `path_not_found`；试图穿过 `file` 继续向下返回 `409` 与 `not_directory`；按目录读取的对象不符合上述目录契约返回 `422` 与 `invalid_directory`；条目引用的本地对象缺失返回 `424` 与 `gateway_target_missing`。错误正文沿用现有 `application/json` 的 `{"error":{"code":"..."}}` 结构；其余方法返回 `405`、`Allow: GET` 与 `method_not_allowed`。网关读取不增加审计事件，既有入口行为保持不变。
 
+## 对象元数据与修订历史
+
+已存对象可携带进程内元数据与连续修订历史；元数据不改变内容标识与正文，不建立引脚，不参与回收保留、存储统计与离线包，也不产生审计事件，仅在进程存活期间可用。
+
+- `PUT /v1/objects/{cid}/metadata`：媒体类型须为 `application/json`，正文严格为 `{"expectedRevision":N,"contentType":T,"labels":{...}}`，三个字段缺一不可，且无未知或重复字段。首次写入 `N` 为 0，之后须等于当前修订号；成功时生成连续递增的新修订，内容未变也保留历史。首次写入返回 `201`，后续返回 `200`；响应为 `{"cid","revision","contentType","labels","updatedAt"}`，`updatedAt` 为 UTC RFC3339Nano 时间。`contentType` 可为 `null`，或为 1 至 255 个 Unicode 码点且不含控制字符的字符串；`labels` 最多 64 项，键须匹配 `[a-z0-9][a-z0-9._-]{0,63}`，值不超过 256 个 Unicode 码点且不含控制字符，响应按键字典序编码。相同 `expectedRevision` 的并发写入仅一个成功，其余返回 `409` 与 `revision_conflict`。
+- `GET /v1/objects/{cid}/metadata`：无查询参数时返回当前修订；`revision` 为正十进制整数时返回对应历史修订，响应结构与 PUT 相同。
+
+失败语义：路径 CID 非法返回 `400` 与 `invalid_cid`；对象不存在返回 `404` 与 `object_not_found`；媒体类型缺失或不符返回 `415` 与 `unsupported_media_type`；非单个严格 JSON、字段缺失、未知、重复、类型错误或 `expectedRevision` 非非负整数返回 `400` 与 `invalid_request`；`contentType` 或 `labels` 越界、违规返回 `422` 与 `invalid_metadata`；`expectedRevision` 与当前修订不符返回 `409` 与 `revision_conflict`；尚无元数据返回 `404` 与 `metadata_not_found`；指定修订不存在返回 `404` 与 `metadata_revision_not_found`；未知或重复查询参数、非法 `revision` 返回 `400` 与 `invalid_request`。任何失败都不产生修订。正式回收随对象原子删除其元数据历史，`dryRun` 不改变历史，重新上传相同 CID 不恢复旧历史。不支持的方法返回 `405`、`Allow: GET, PUT` 与 `method_not_allowed`。
+
 ## 审计事件流
 
 进程内审计事件流记录变更与检索入口的成功结果，仅在进程存活期间可用，不承诺重启保留。审计不参与引脚、回收、存储统计或内容寻址；失败请求与审计读取本身不记录。事件在业务状态提交后可见，并发时事件顺序与提交顺序一致。仅保留最近 10000 条，淘汰最旧记录后 `seq` 继续递增且不复用。
