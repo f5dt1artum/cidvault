@@ -22,6 +22,7 @@ type health struct {
 func Handler() http.Handler {
 	objects := newStore()
 	providers := newProviderDirectory()
+	retrievals := newRetriever(objects, providers)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -46,5 +47,6 @@ func Handler() http.Handler {
 	mux.HandleFunc("/v1/gc", objects.gc)
 	mux.HandleFunc("/v1/providers/{cid}", providers.providersByCID)
 	mux.HandleFunc("/v1/providers/{cid}/{providerId}", providers.providerByID)
+	mux.HandleFunc("/v1/retrievals/{cid}", retrievals.handleRetrieval)
 	return mux
 }
