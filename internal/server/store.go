@@ -55,18 +55,20 @@ type blockRef struct {
 // once and shared by every object that references them; a block is dropped
 // as soon as no live object references it.
 type store struct {
-	mu      sync.RWMutex
-	objects map[string]*object
-	blocks  map[string]*blockRef
-	pins    map[string]pin
-	audit   *auditLog // nil until wired by the HTTP surface
+	mu       sync.RWMutex
+	objects  map[string]*object
+	blocks   map[string]*blockRef
+	pins     map[string]pin
+	metadata map[string][]metadataRevision
+	audit    *auditLog // nil until wired by the HTTP surface
 }
 
 func newStore() *store {
 	return &store{
-		objects: make(map[string]*object),
-		blocks:  make(map[string]*blockRef),
-		pins:    make(map[string]pin),
+		objects:  make(map[string]*object),
+		blocks:   make(map[string]*blockRef),
+		pins:     make(map[string]pin),
+		metadata: make(map[string][]metadataRevision),
 	}
 }
 
@@ -238,6 +240,7 @@ func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, total
 		for _, cid := range cids {
 			obj := s.objects[cid]
 			delete(s.objects, cid)
+			delete(s.metadata, cid)
 			s.releaseBlocks(obj)
 		}
 		for cid, p := range s.pins {
@@ -279,6 +282,67 @@ func (s *store) releaseBlocks(obj *object) {
 			delete(s.blocks, c)
 		}
 	}
+}
+
+// metadataRevision is one immutable metadata revision of an object. Each
+// object's revisions are kept in commit order, so the revision number of
+// entry i is i+1. Metadata lives in process memory only: it creates no pin,
+// takes no part in storage statistics, bundles or the audit log, and is
+// deleted atomically with its object by garbage collection.
+type metadataRevision struct {
+	revision    int64
+	contentType *string
+	labels      map[string]string
+	updatedAt   time.Time
+}
+
+// commitMetadata appends one metadata revision for cid when expected equals
+// the current revision number (0 before the first write). The check and the
+// append happen under the write lock, so exactly one of several concurrent
+// writers carrying the same expected revision commits. The returned string
+// is empty on success or the error code to report: object_not_found or
+// revision_conflict. created is true for the first revision of an object.
+func (s *store) commitMetadata(cid string, expected int64, contentType *string, labels map[string]string, now time.Time) (rev metadataRevision, created bool, code string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.objects[cid]; !ok {
+		return metadataRevision{}, false, "object_not_found"
+	}
+	history := s.metadata[cid]
+	if int64(len(history)) != expected {
+		return metadataRevision{}, false, "revision_conflict"
+	}
+	rev = metadataRevision{
+		revision:    expected + 1,
+		contentType: contentType,
+		labels:      labels,
+		updatedAt:   now.UTC(),
+	}
+	s.metadata[cid] = append(history, rev)
+	return rev, expected == 0, ""
+}
+
+// metadataAt returns the current metadata revision for cid, or the requested
+// historical revision when revision > 0. The returned string is empty on
+// success or the error code to report: object_not_found, metadata_not_found
+// or metadata_revision_not_found.
+func (s *store) metadataAt(cid string, revision int64) (metadataRevision, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.objects[cid]; !ok {
+		return metadataRevision{}, "object_not_found"
+	}
+	history := s.metadata[cid]
+	if len(history) == 0 {
+		return metadataRevision{}, "metadata_not_found"
+	}
+	if revision == 0 {
+		return history[len(history)-1], ""
+	}
+	if revision > int64(len(history)) {
+		return metadataRevision{}, "metadata_revision_not_found"
+	}
+	return history[revision-1], ""
 }
 
 // validCID reports whether s has the "sha256:<64 lowercase hex>" shape.
