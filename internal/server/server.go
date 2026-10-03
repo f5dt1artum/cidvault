@@ -27,6 +27,7 @@ func Handler() http.Handler {
 	providers := newProviderDirectory()
 	providers.audit = audit
 	retriever := newRetriever(objects, providers)
+	sealed := newSealedStore()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -54,6 +55,9 @@ func Handler() http.Handler {
 	mux.HandleFunc("/v1/providers/{cid}/{providerId}", providers.providerByID)
 	mux.HandleFunc("/v1/retrievals/{cid}", retriever.postRetrieval)
 	mux.HandleFunc("/v1/retrievability-proofs/{cid}", objects.postRetrievabilityProof)
+	mux.HandleFunc("/v1/sealed-objects", sealed.postSealedObject)
+	mux.HandleFunc("/v1/sealed-objects/{cid}", sealed.sealedObjectByID)
+	mux.HandleFunc("/v1/sealed-objects/{cid}/envelope", sealed.getSealedEnvelope)
 	mux.HandleFunc("/v1/audit/events", audit.getEvents)
 
 	// The gateway is dispatched before ServeMux on the raw request target:
