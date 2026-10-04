@@ -5,7 +5,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"strconv"
 )
 
 // objectResponse is the JSON body returned by POST /v1/objects.
@@ -105,21 +104,49 @@ func (s *store) lookupObject(w http.ResponseWriter, r *http.Request) *object {
 	return obj
 }
 
-// getObject handles GET /v1/objects/{cid}.
+// getObject handles GET and HEAD /v1/objects/{cid}. Both share the
+// conditional and range-aware read path; HEAD carries the full response
+// headers, ignores Range and never writes a body.
 func (s *store) getObject(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	if !readMethodAllowed(w, r) {
 		return
 	}
-	obj := s.lookupObject(w, r)
+	cid := r.PathValue("cid")
+	if !validCID(cid) {
+		writeReadError(w, r, http.StatusBadRequest, "invalid_cid")
+		return
+	}
+	obj := s.get(cid)
 	if obj == nil {
+		writeReadError(w, r, http.StatusNotFound, "object_not_found")
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.Itoa(obj.size))
-	for _, chunk := range obj.chunks {
-		_, _ = w.Write(chunk)
+	serveStoredContent(w, r, obj.cid, "application/octet-stream", obj.size, obj.writeRange)
+}
+
+// writeRange writes the closed interval [start, end] of the object's body,
+// walking only the chunks the interval touches.
+func (o *object) writeRange(w io.Writer, start, end int) {
+	pos := 0
+	for _, chunk := range o.chunks {
+		next := pos + len(chunk)
+		if next > start {
+			lo := start - pos
+			if lo < 0 {
+				lo = 0
+			}
+			hi := end - pos + 1
+			if hi > len(chunk) {
+				hi = len(chunk)
+			}
+			if lo < hi {
+				_, _ = w.Write(chunk[lo:hi])
+			}
+		}
+		pos = next
+		if pos > end {
+			return
+		}
 	}
 }
 

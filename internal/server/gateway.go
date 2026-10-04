@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -60,28 +59,28 @@ type directoryEntry struct {
 
 // gateway handles every route under /v1/gateway/, including ones ServeMux
 // would otherwise rewrite (raw dot-segments or empty segments), so it must
-// parse the raw request target itself.
+// parse the raw request target itself. GET and HEAD share the conditional
+// and range-aware read path; HEAD carries the full response headers, ignores
+// Range and never writes a body.
 func (s *store) gateway(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	if !readMethodAllowed(w, r) {
 		return
 	}
 	rest, ok := gatewayRawPath(r)
 	if !ok {
 		// In principle the dispatcher only routes matching targets here.
-		writeError(w, http.StatusNotFound, "object_not_found")
+		writeReadError(w, r, http.StatusNotFound, "object_not_found")
 		return
 	}
 	rawSegments := strings.Split(rest, "/")
 	rootCID, ok := decodeGatewaySegment(rawSegments[0])
 	if !ok || !validCID(rootCID) {
-		writeError(w, http.StatusBadRequest, "invalid_cid")
+		writeReadError(w, r, http.StatusBadRequest, "invalid_cid")
 		return
 	}
 	rawPath := rawSegments[1:]
 	if len(rawPath) > maxGatewaySegments {
-		writeError(w, http.StatusBadRequest, "invalid_path")
+		writeReadError(w, r, http.StatusBadRequest, "invalid_path")
 		return
 	}
 	segments := make([]string, len(rawPath))
@@ -89,7 +88,7 @@ func (s *store) gateway(w http.ResponseWriter, r *http.Request) {
 		seg, ok := decodeGatewaySegment(raw)
 		if !ok || !utf8.ValidString(seg) || seg == "" ||
 			strings.ContainsAny(seg, `/\`) || seg == "." || seg == ".." {
-			writeError(w, http.StatusBadRequest, "invalid_path")
+			writeReadError(w, r, http.StatusBadRequest, "invalid_path")
 			return
 		}
 		segments[i] = seg
@@ -97,18 +96,14 @@ func (s *store) gateway(w http.ResponseWriter, r *http.Request) {
 
 	outcome := s.resolveGateway(rootCID, segments)
 	if outcome.status != 0 {
-		writeError(w, outcome.status, outcome.code)
+		writeReadError(w, r, outcome.status, outcome.code)
 		return
 	}
 	mediaType := "application/octet-stream"
 	if outcome.directory {
 		mediaType = directoryMediaType
 	}
-	w.Header().Set("Content-Type", mediaType)
-	w.Header().Set("Content-Length", strconv.Itoa(outcome.obj.size))
-	for _, chunk := range outcome.obj.chunks {
-		_, _ = w.Write(chunk)
-	}
+	serveStoredContent(w, r, outcome.obj.cid, mediaType, outcome.obj.size, outcome.obj.writeRange)
 }
 
 // gatewayOutcome is either a successful resolution (obj plus whether it is a

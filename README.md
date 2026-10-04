@@ -104,7 +104,17 @@ go run ./cmd/cidvault
 
 路径校验：每段百分号解码恰好一次（`+` 为字面量）；一次请求至多解析 64 段（不含根 CID）。整个解析以受理时对象库的同一一致快照完成（单次读锁内走完整条路径），并发回收不会使一个请求看到不同时点的对象；网关只读本地已存对象，条目录用的本地对象缺失时直接失败，不访问提供者地址。
 
-失败语义：根 CID 非法返回 `400` 与 `invalid_cid`；路径存在非法转义、解码非 UTF-8、空段，或解码结果含斜杠/反斜杠、等于 `.`/`..`、超过 64 段返回 `400` 与 `invalid_path`；根对象缺失返回 `404` 与 `object_not_found`；某层条目不存在返回 `404` 与 `path_not_found`；试图穿过 `file` 继续向下返回 `409` 与 `not_directory`；按目录读取的对象不符合上述目录契约返回 `422` 与 `invalid_directory`；条目引用的本地对象缺失返回 `424` 与 `gateway_target_missing`。错误正文沿用现有 `application/json` 的 `{"error":{"code":"..."}}` 结构；其余方法返回 `405`、`Allow: GET` 与 `method_not_allowed`。网关读取不增加审计事件，既有入口行为保持不变。
+失败语义：根 CID 非法返回 `400` 与 `invalid_cid`；路径存在非法转义、解码非 UTF-8、空段，或解码结果含斜杠/反斜杠、等于 `.`/`..`、超过 64 段返回 `400` 与 `invalid_path`；根对象缺失返回 `404` 与 `object_not_found`；某层条目不存在返回 `404` 与 `path_not_found`；试图穿过 `file` 继续向下返回 `409` 与 `not_directory`；按目录读取的对象不符合上述目录契约返回 `422` 与 `invalid_directory`；条目引用的本地对象缺失返回 `424` 与 `gateway_target_missing`。错误正文沿用现有 `application/json` 的 `{"error":{"code":"..."}}` 结构；其余方法返回 `405`、`Allow: GET, HEAD` 与 `method_not_allowed`。网关读取不增加审计事件，既有入口行为保持不变。
+
+## 条件读取、断点读取与 HEAD
+
+`GET /v1/objects/{cid}`、`GET /v1/blocks/{cid}` 与全部 `GET /v1/gateway/{cid}/{path...}` 支持条件缓存、单范围断点读取与 HEAD，既有读取语义不变：普通 GET 仍返回逐字节一致的全文、原 `Content-Type` 与准确 `Content-Length`。
+
+- 强 ETag：对象与网关取（网关最终解析到的）对象 CID，块取块 CID，均以双引号包围完整 CID；成功响应另带 `Accept-Ranges: bytes`。
+- `If-None-Match` 按 HTTP 弱比较接受 `*`、单个标签与逗号分隔标签，任一匹配时先于 `Range` 返回无正文的 `304`；无法解析为这些形式返回 `400` 与 `invalid_request`。其他条件头不新增语义。
+- `Range` 仅接受一个 `bytes` 范围：闭区间、指定起点至末尾或后缀长度。可满足时返回 `206`、实际闭区间与完整长度的 `Content-Range` 及所选字节数的 `Content-Length`，覆盖全文亦然；超过末尾的终点或后缀截到正文边界。单位非 `bytes`、语法非法、多范围、起点越界、终点早于起点、零长度后缀或空正文的任意范围，统一返回 `416`、`range_not_satisfiable` 与 `Content-Range: bytes */<完整长度>`。
+- `HEAD` 沿用对应 GET 的 CID、路径、目录及目标存在性校验，忽略 `Range`，返回完整响应应有的状态、`ETag`、`Accept-Ranges`、`Content-Type` 与 `Content-Length`，但任何状态都不写正文；`If-None-Match` 匹配仍返回 `304`。
+- 三个入口仅允许 `GET, HEAD`，其他方法返回 `405`、`Allow: GET, HEAD` 与 `method_not_allowed`。错误优先级为既有路径和资源错误、`If-None-Match`、`Range`，不掩盖 `invalid_cid`、`object_not_found`、`block_not_found` 或网关解析错误。这些读取不建立引脚、不触发远端检索或审计，也不改变对象、块、元数据、引用和存储统计。
 
 ## 审计事件流
 

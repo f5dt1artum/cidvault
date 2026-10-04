@@ -1,8 +1,8 @@
 package server
 
 import (
+	"io"
 	"net/http"
-	"strconv"
 )
 
 // statsResponse is the JSON body of GET /v1/storage/stats. Objects counts
@@ -16,26 +16,25 @@ type statsResponse struct {
 	StoredBytes  int `json:"storedBytes"`
 }
 
-// getBlock handles GET /v1/blocks/{cid}.
+// getBlockByID handles GET and HEAD /v1/blocks/{cid}. Both share the
+// conditional and range-aware read path; HEAD carries the full response
+// headers, ignores Range and never writes a body.
 func (s *store) getBlockByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	if !readMethodAllowed(w, r) {
 		return
 	}
 	cid := r.PathValue("cid")
 	if !validCID(cid) {
-		writeError(w, http.StatusBadRequest, "invalid_cid")
+		writeReadError(w, r, http.StatusBadRequest, "invalid_cid")
 		return
 	}
 	data := s.getBlock(cid)
 	if data == nil {
-		writeError(w, http.StatusNotFound, "block_not_found")
+		writeReadError(w, r, http.StatusNotFound, "block_not_found")
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	_, _ = w.Write(data)
+	serveStoredContent(w, r, cid, "application/octet-stream", len(data),
+		func(w io.Writer, start, end int) { _, _ = w.Write(data[start : end+1]) })
 }
 
 // getStorageStats handles GET /v1/storage/stats.
