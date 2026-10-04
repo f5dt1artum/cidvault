@@ -55,22 +55,24 @@ type blockRef struct {
 // once and shared by every object that references them; a block is dropped
 // as soon as no live object references it.
 type store struct {
-	mu       sync.RWMutex
-	objects  map[string]*object
-	blocks   map[string]*blockRef
-	pins     map[string]pin
-	metadata map[string][]metadataRevision
-	refs     map[string][]refRevision
-	audit    *auditLog // nil until wired by the HTTP surface
+	mu            sync.RWMutex
+	objects       map[string]*object
+	blocks        map[string]*blockRef
+	pins          map[string]pin
+	recursivePins map[string]recursivePin
+	metadata      map[string][]metadataRevision
+	refs          map[string][]refRevision
+	audit         *auditLog // nil until wired by the HTTP surface
 }
 
 func newStore() *store {
 	return &store{
-		objects:  make(map[string]*object),
-		blocks:   make(map[string]*blockRef),
-		pins:     make(map[string]pin),
-		metadata: make(map[string][]metadataRevision),
-		refs:     make(map[string][]refRevision),
+		objects:       make(map[string]*object),
+		blocks:        make(map[string]*blockRef),
+		pins:          make(map[string]pin),
+		recursivePins: make(map[string]recursivePin),
+		metadata:      make(map[string][]metadataRevision),
+		refs:          make(map[string][]refRevision),
 	}
 }
 
@@ -222,16 +224,32 @@ func (s *store) listPins(now time.Time) []pinEntry {
 	return entries
 }
 
-// collectGarbage removes every object with no valid pin in force at now, or
-// only counts them when dryRun is true. It returns the affected cids in
-// lexical order and the sum of their body sizes. The sweep is atomic with
-// respect to pin updates and object reads.
+// collectGarbage removes every object not retained at now, or only counts
+// them when dryRun is true. Retention is decided jointly by the direct pins
+// and the recursive pins in force: an object survives when a valid direct
+// pin names it or a valid recursive pin's member snapshot covers it. It
+// returns the affected cids in lexical order and the sum of their body
+// sizes. The sweep is atomic with respect to pin updates and object reads.
 func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, totalBytes int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	protected := make(map[string]bool, len(s.pins))
+	for cid, p := range s.pins {
+		if validPin(p, now) {
+			protected[cid] = true
+		}
+	}
+	for _, rp := range s.recursivePins {
+		if !validPin(pin{expiresAt: rp.expiresAt}, now) {
+			continue
+		}
+		for _, member := range rp.members {
+			protected[member] = true
+		}
+	}
 	cids = []string{}
 	for cid, obj := range s.objects {
-		if p, pinned := s.pins[cid]; pinned && validPin(p, now) {
+		if protected[cid] {
 			continue
 		}
 		cids = append(cids, cid)
@@ -248,6 +266,11 @@ func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, total
 		for cid, p := range s.pins {
 			if !validPin(p, now) {
 				delete(s.pins, cid)
+			}
+		}
+		for cid, rp := range s.recursivePins {
+			if !validPin(pin{expiresAt: rp.expiresAt}, now) {
+				delete(s.recursivePins, cid)
 			}
 		}
 	}
