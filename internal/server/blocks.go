@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"strconv"
 )
 
 // statsResponse is the JSON body of GET /v1/storage/stats. Objects counts
@@ -16,12 +15,15 @@ type statsResponse struct {
 	StoredBytes  int `json:"storedBytes"`
 }
 
-// getBlock handles GET /v1/blocks/{cid}.
+// getBlockByID handles GET and HEAD /v1/blocks/{cid}.
 func (s *store) getBlockByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", allowGetHead)
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
+	}
+	if r.Method == http.MethodHead {
+		w = headWriter{w}
 	}
 	cid := r.PathValue("cid")
 	if !validCID(cid) {
@@ -33,9 +35,7 @@ func (s *store) getBlockByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "block_not_found")
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	_, _ = w.Write(data)
+	serveBytes(w, r, data, "application/octet-stream", strongETag(cid))
 }
 
 // getStorageStats handles GET /v1/storage/stats.

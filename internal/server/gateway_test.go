@@ -344,13 +344,13 @@ func TestGatewayMalformedDirectories(t *testing.T) {
 func TestGatewayMethodNotAllowed(t *testing.T) {
 	h := Handler()
 	rootCID, _, _ := buildTree(t, h)
-	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodHead} {
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
 		rec := gatewayRequestRaw(h, method, "/v1/gateway/"+rootCID)
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("%s: status = %d, want 405", method, rec.Code)
 		}
-		if allow := rec.Header().Get("Allow"); allow != http.MethodGet {
-			t.Fatalf("%s: Allow = %q, want GET", method, allow)
+		if allow := rec.Header().Get("Allow"); allow != "GET, HEAD" {
+			t.Fatalf("%s: Allow = %q, want GET, HEAD", method, allow)
 		}
 		assertErrorCode(t, rec, "method_not_allowed")
 	}

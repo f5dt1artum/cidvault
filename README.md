@@ -104,7 +104,19 @@ go run ./cmd/cidvault
 
 路径校验：每段百分号解码恰好一次（`+` 为字面量）；一次请求至多解析 64 段（不含根 CID）。整个解析以受理时对象库的同一一致快照完成（单次读锁内走完整条路径），并发回收不会使一个请求看到不同时点的对象；网关只读本地已存对象，条目录用的本地对象缺失时直接失败，不访问提供者地址。
 
-失败语义：根 CID 非法返回 `400` 与 `invalid_cid`；路径存在非法转义、解码非 UTF-8、空段，或解码结果含斜杠/反斜杠、等于 `.`/`..`、超过 64 段返回 `400` 与 `invalid_path`；根对象缺失返回 `404` 与 `object_not_found`；某层条目不存在返回 `404` 与 `path_not_found`；试图穿过 `file` 继续向下返回 `409` 与 `not_directory`；按目录读取的对象不符合上述目录契约返回 `422` 与 `invalid_directory`；条目引用的本地对象缺失返回 `424` 与 `gateway_target_missing`。错误正文沿用现有 `application/json` 的 `{"error":{"code":"..."}}` 结构；其余方法返回 `405`、`Allow: GET` 与 `method_not_allowed`。网关读取不增加审计事件，既有入口行为保持不变。
+失败语义：根 CID 非法返回 `400` 与 `invalid_cid`；路径存在非法转义、解码非 UTF-8、空段，或解码结果含斜杠/反斜杠、等于 `.`/`..`、超过 64 段返回 `400` 与 `invalid_path`；根对象缺失返回 `404` 与 `object_not_found`；某层条目不存在返回 `404` 与 `path_not_found`；试图穿过 `file` 继续向下返回 `409` 与 `not_directory`；按目录读取的对象不符合上述目录契约返回 `422` 与 `invalid_directory`；条目引用的本地对象缺失返回 `424` 与 `gateway_target_missing`。错误正文沿用现有 `application/json` 的 `{"error":{"code":"..."}}` 结构；其余方法返回 `405`、`Allow: GET, HEAD` 与 `method_not_allowed`。网关读取不增加审计事件，既有入口行为保持不变。
+
+## 条件请求、范围读取与 HEAD
+
+`GET /v1/objects/{cid}`、`GET /v1/blocks/{cid}` 与全部 `GET /v1/gateway/{cid}/{path...}` 在既有全文读取之上支持条件缓存、单范围断点读取和 HEAD，不改变既有读取语义：普通 GET 仍返回逐字节一致的全文、原 `Content-Type` 和准确 `Content-Length`。
+
+- 强验证器：成功响应带 `ETag`，值为双引号包围的完整 CID（对象取对象 CID，块取块 CID，网关取最终对象 CID），并带 `Accept-Ranges: bytes`。
+- 条件请求：`If-None-Match` 按 HTTP 弱比较求值，接受 `*`、单个标签和逗号分隔的标签列表（可带 `W/` 前缀）；任一匹配时先于 `Range` 返回无正文的 `304`。值无法解析为这些形式时返回 `400` 与 `invalid_request`。其他条件头不新增语义。
+- 范围读取：`Range` 仅接受一个 `bytes` 范围，支持闭区间 `bytes=a-b`、指定起点至末尾 `bytes=a-` 和后缀长度 `bytes=-n`。可满足时返回 `206`、`Content-Range: bytes <起>-<止>/<全长>`（实际闭区间与完整长度）及所选字节数的 `Content-Length`，覆盖全文的范围同样返回 `206`。单位非 `bytes`、语法非法、多范围、起点越界、终点早于起点、零长度后缀或空正文的任意范围，统一返回 `416`、`range_not_satisfiable` 与 `Content-Range: bytes */<全长>`；超过末尾的终点或后缀截到正文边界。
+- HEAD：三个入口的 `HEAD` 沿用对应 GET 的 CID、路径、目录及目标存在性校验，忽略 `Range`，返回完整响应应有的状态、`ETag`、`Accept-Ranges`、`Content-Type` 和 `Content-Length`，但任何状态都不写正文；`If-None-Match` 匹配仍返回 `304`。
+- 三个入口仅允许 `GET, HEAD`，其他方法返回 `405`、`Allow: GET, HEAD` 与 `method_not_allowed`。错误优先级为既有路径和资源错误、`If-None-Match`、`Range`，条件与范围处理不得掩盖 `invalid_cid`、`object_not_found`、`block_not_found` 或网关解析错误。
+
+这些读取不建立引脚、不触发远端检索或审计事件，也不改变对象、块、元数据、引用和存储统计；其他公开入口保持现状。
 
 ## 审计事件流
 

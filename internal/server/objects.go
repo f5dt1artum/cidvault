@@ -5,7 +5,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"strconv"
 )
 
 // objectResponse is the JSON body returned by POST /v1/objects.
@@ -105,22 +104,21 @@ func (s *store) lookupObject(w http.ResponseWriter, r *http.Request) *object {
 	return obj
 }
 
-// getObject handles GET /v1/objects/{cid}.
+// getObject handles GET and HEAD /v1/objects/{cid}.
 func (s *store) getObject(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", allowGetHead)
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
+	}
+	if r.Method == http.MethodHead {
+		w = headWriter{w}
 	}
 	obj := s.lookupObject(w, r)
 	if obj == nil {
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.Itoa(obj.size))
-	for _, chunk := range obj.chunks {
-		_, _ = w.Write(chunk)
-	}
+	serveBytes(w, r, obj.body(), "application/octet-stream", strongETag(obj.cid))
 }
 
 // getManifest handles GET /v1/objects/{cid}/manifest.

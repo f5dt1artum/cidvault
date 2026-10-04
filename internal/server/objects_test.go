@@ -240,7 +240,7 @@ func TestMethodNotAllowed(t *testing.T) {
 	}{
 		{http.MethodGet, "/v1/objects", http.MethodPost},
 		{http.MethodPut, "/v1/objects", http.MethodPost},
-		{http.MethodPost, "/v1/objects/" + strings.Repeat("0", 64), http.MethodGet},
+		{http.MethodPost, "/v1/objects/" + strings.Repeat("0", 64), "GET, HEAD"},
 		{http.MethodDelete, "/v1/objects/" + strings.Repeat("0", 64) + "/manifest", http.MethodGet},
 	}
 	for _, tc := range cases {

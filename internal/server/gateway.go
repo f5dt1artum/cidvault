@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -62,10 +61,13 @@ type directoryEntry struct {
 // would otherwise rewrite (raw dot-segments or empty segments), so it must
 // parse the raw request target itself.
 func (s *store) gateway(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", allowGetHead)
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
+	}
+	if r.Method == http.MethodHead {
+		w = headWriter{w}
 	}
 	rest, ok := gatewayRawPath(r)
 	if !ok {
@@ -104,11 +106,7 @@ func (s *store) gateway(w http.ResponseWriter, r *http.Request) {
 	if outcome.directory {
 		mediaType = directoryMediaType
 	}
-	w.Header().Set("Content-Type", mediaType)
-	w.Header().Set("Content-Length", strconv.Itoa(outcome.obj.size))
-	for _, chunk := range outcome.obj.chunks {
-		_, _ = w.Write(chunk)
-	}
+	serveBytes(w, r, outcome.obj.body(), mediaType, strongETag(outcome.obj.cid))
 }
 
 // gatewayOutcome is either a successful resolution (obj plus whether it is a

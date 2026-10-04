@@ -87,17 +87,23 @@ func TestBlockReadErrors(t *testing.T) {
 func TestNewEndpointsRejectNonGet(t *testing.T) {
 	h := Handler()
 	resp := upload(t, h, []byte("hello"))
-	paths := []string{"/v1/blocks/" + resp.Chunks[0], "/v1/storage/stats"}
-	for _, path := range paths {
+	cases := []struct {
+		path  string
+		allow string
+	}{
+		{"/v1/blocks/" + resp.Chunks[0], "GET, HEAD"},
+		{"/v1/storage/stats", http.MethodGet},
+	}
+	for _, tc := range cases {
 		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
-			req := httptest.NewRequest(method, path, nil)
+			req := httptest.NewRequest(method, tc.path, nil)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if rec.Code != http.StatusMethodNotAllowed {
-				t.Fatalf("%s %s: status = %d, want %d", method, path, rec.Code, http.StatusMethodNotAllowed)
+				t.Fatalf("%s %s: status = %d, want %d", method, tc.path, rec.Code, http.StatusMethodNotAllowed)
 			}
-			if allow := rec.Header().Get("Allow"); allow != http.MethodGet {
-				t.Fatalf("%s %s: Allow = %q, want GET", method, path, allow)
+			if allow := rec.Header().Get("Allow"); allow != tc.allow {
+				t.Fatalf("%s %s: Allow = %q, want %q", method, tc.path, allow, tc.allow)
 			}
 			assertErrorCode(t, rec, "method_not_allowed")
 		}
