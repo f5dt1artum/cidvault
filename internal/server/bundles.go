@@ -57,6 +57,14 @@ func (s *store) getBundle(w http.ResponseWriter, r *http.Request) {
 	if obj == nil {
 		return
 	}
+	w.Header().Set("Content-Type", bundleMediaType)
+	_, _ = w.Write(append(bundleBytes(obj), '\n'))
+}
+
+// bundleBytes renders the export document for obj exactly as
+// GET /v1/bundles/{cid} serves it: unique blocks sorted by cid, each
+// carrying its raw bytes in standard RFC 4648 Base64.
+func bundleBytes(obj *object) []byte {
 	dataByCID := make(map[string][]byte, len(obj.cids))
 	for i, c := range obj.cids {
 		dataByCID[c] = obj.chunks[i]
@@ -73,8 +81,7 @@ func (s *store) getBundle(w http.ResponseWriter, r *http.Request) {
 			Data: base64.StdEncoding.EncodeToString(dataByCID[c]),
 		})
 	}
-	w.Header().Set("Content-Type", bundleMediaType)
-	_ = json.NewEncoder(w).Encode(bundleDocument{
+	data, _ := json.Marshal(bundleDocument{
 		Version: bundleVersion,
 		Root: bundleRoot{
 			CID:       obj.cid,
@@ -84,6 +91,7 @@ func (s *store) getBundle(w http.ResponseWriter, r *http.Request) {
 		},
 		Blocks: blocks,
 	})
+	return data
 }
 
 // bundleRootJSON is the strictly decoded root section of an import body.
