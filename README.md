@@ -43,7 +43,17 @@ go run ./cmd/cidvault
 - `PUT /v1/pins/{cid}`：为已有对象建立或更新引脚。媒体类型须为 `application/json`，正文只可含可选的 `expiresAt`；省略或传 `null` 表示永久保留，非空值须为严格晚于受理时刻的 RFC3339 时间。当前无有效引脚时建立返回 `201`，否则更新返回 `200`；响应为 `{"cid","expiresAt"}`。到期时间格式错误或不在未来返回 `422` 与 `invalid_expiration`；畸形 JSON 或未知字段返回 `400` 与 `invalid_request`；媒体类型不符返回 `415` 与 `unsupported_media_type`；对象不存在返回 `404` 与 `object_not_found`。
 - `GET /v1/pins`：返回 `{"pins":[{"cid","expiresAt"},...]}`，仅含有效引脚，永久项的 `expiresAt` 为 `null`，按 cid 字典序排列；到期引脚不返回。
 - `DELETE /v1/pins/{cid}`：删除成功返回 `204`；引脚不存在或已到期返回 `404` 与 `pin_not_found`。
-- `POST /v1/gc`：回收受理时没有有效引脚的对象（到期引脚等同未引脚，永久或未到期引脚保留）。带 `dryRun=true` 时只预览不删除，`dryRun` 取其他值返回 `400` 与 `invalid_request`。响应为 `{"dryRun","objects","bytes","cids"}`，`objects` 为候选或已删除对象数，`bytes` 为其正文长度之和，`cids` 按字典序排列。被回收对象的正文与清单读取返回 `404` 与 `object_not_found`；重新上传相同内容仍得到原 CID。引脚与回收互为原子：加引脚先成功则同次回收不得删除，回收先删除则加引脚返回 `object_not_found`。
+- `POST /v1/gc`：回收受理时既无有效引脚也不属于任何有效递归引脚记录成员的对象（到期记录等同不存在，永久或未到期记录保留）。带 `dryRun=true` 时只预览不删除，`dryRun` 取其他值返回 `400` 与 `invalid_request`。响应为 `{"dryRun","objects","bytes","cids"}`，`objects` 为候选或已删除对象数，`bytes` 为其正文长度之和，`cids` 按字典序排列。被回收对象的正文与清单读取返回 `404` 与 `object_not_found`；重新上传相同内容仍得到原 CID。引脚与回收互为原子：加引脚先成功则同次回收不得删除，回收先删除则加引脚返回 `object_not_found`。
+
+## 递归引脚
+
+递归引脚把整棵目录子树作为一条记录保留：根对象须为已存在的合法目录，服务按目录格式递归遍历，`directory` 项继续下探，`file` 项为叶子，同一 CID 只计一次。遍历、存在性检查与提交在同一时点完成，任何失败都不留下记录；递归引脚先提交即保护全部成员，回收先删除所需对象则建立失败。
+
+- `PUT /v1/recursive-pins/{cid}`：建立或替换该根 CID 的递归引脚记录。媒体类型须为 `application/json`，正文为单个严格 JSON 对象，只可含可选的 `expiresAt`；省略或传 `null` 表示永久保留，非空值须为严格晚于受理时刻的 RFC3339 时间。首次建立或替换已到期记录返回 `201`，更新有效记录返回 `200`。响应为 `{"cid","expiresAt","objects","bytes","members"}`：`members` 为提交时快照，含根及全部后代，按 CID 字典序排列；`objects` 为唯一成员对象数；`bytes` 为成员正文长度之和。路径 CID 非法返回 `400` 与 `invalid_cid`；媒体类型不符返回 `415` 与 `unsupported_media_type`；正文不是单个严格 JSON、含未知或重复字段返回 `400` 与 `invalid_request`；到期值非法返回 `422` 与 `invalid_expiration`；根对象不存在返回 `404` 与 `object_not_found`；根或下探到的目录对象不是合法目录返回 `422` 与 `invalid_directory`；被引用对象缺失返回 `424` 与 `recursive_pin_target_missing`；遍历深度超过 64（根为第 0 层）或唯一成员超过 10000 返回 `422` 与 `recursive_pin_too_large`。
+- `GET /v1/recursive-pins/{cid}`：返回有效记录及创建时的成员快照，结构同上；记录不存在或已到期返回 `404` 与 `recursive_pin_not_found`。
+- `DELETE /v1/recursive-pins/{cid}`：删除有效记录返回 `204`；记录不存在或已到期返回 `404` 与 `recursive_pin_not_found`。删除只移除保留记录，不立即删除成员对象，也不写审计事件。
+
+有效递归引脚与直接引脚共同决定 `POST /v1/gc` 的保留集合，预览规则相同；删除或到期一条记录不释放仍受其他递归记录或直接引脚保护的对象。递归成员不出现在 `GET /v1/pins`；递归引脚的建立、更新与删除均不写审计事件。该入口仅允许 `GET, PUT, DELETE`，其他方法返回 `405`、对应 `Allow` 头与 `method_not_allowed`。
 
 ## 单对象离线包
 

@@ -42,6 +42,25 @@ func validPin(p pin, now time.Time) bool {
 	return p.expiresAt == nil || p.expiresAt.After(now)
 }
 
+// recursivePin records a retention guarantee for a directory root and every
+// object reachable from it at commit time. members holds the unique member
+// cids, root included, sorted lexically; it is the commit-time snapshot
+// returned by reads and the retention set used by garbage collection. bytes
+// is the sum of the member body sizes. A nil expiresAt means the record is
+// in force permanently. Records live in process memory only, are not listed
+// by GET /v1/pins and append no audit events.
+type recursivePin struct {
+	expiresAt *time.Time
+	members   []string
+	bytes     int
+}
+
+// validRecursivePin reports whether rp is in force at now. Expired records
+// are equivalent to no record at all.
+func validRecursivePin(rp recursivePin, now time.Time) bool {
+	return rp.expiresAt == nil || rp.expiresAt.After(now)
+}
+
 // blockRef holds one unique stored block. refs counts the live objects that
 // reference the block; a block repeated within one object still counts once.
 type blockRef struct {
@@ -55,22 +74,24 @@ type blockRef struct {
 // once and shared by every object that references them; a block is dropped
 // as soon as no live object references it.
 type store struct {
-	mu       sync.RWMutex
-	objects  map[string]*object
-	blocks   map[string]*blockRef
-	pins     map[string]pin
-	metadata map[string][]metadataRevision
-	refs     map[string][]refRevision
-	audit    *auditLog // nil until wired by the HTTP surface
+	mu            sync.RWMutex
+	objects       map[string]*object
+	blocks        map[string]*blockRef
+	pins          map[string]pin
+	recursivePins map[string]recursivePin
+	metadata      map[string][]metadataRevision
+	refs          map[string][]refRevision
+	audit         *auditLog // nil until wired by the HTTP surface
 }
 
 func newStore() *store {
 	return &store{
-		objects:  make(map[string]*object),
-		blocks:   make(map[string]*blockRef),
-		pins:     make(map[string]pin),
-		metadata: make(map[string][]metadataRevision),
-		refs:     make(map[string][]refRevision),
+		objects:       make(map[string]*object),
+		blocks:        make(map[string]*blockRef),
+		pins:          make(map[string]pin),
+		recursivePins: make(map[string]recursivePin),
+		metadata:      make(map[string][]metadataRevision),
+		refs:          make(map[string][]refRevision),
 	}
 }
 
@@ -222,16 +243,139 @@ func (s *store) listPins(now time.Time) []pinEntry {
 	return entries
 }
 
-// collectGarbage removes every object with no valid pin in force at now, or
-// only counts them when dryRun is true. It returns the affected cids in
-// lexical order and the sum of their body sizes. The sweep is atomic with
-// respect to pin updates and object reads.
+// recursivePinChild is one pending directory entry in a traversal.
+type recursivePinChild struct {
+	entry directoryEntry
+	depth int // depth of the referenced object; the root is depth 0
+}
+
+// setRecursivePin validates and traverses the directory tree rooted at cid
+// and atomically commits the recursive pin record, replacing any previous
+// record. The whole traversal, every existence check and the commit run
+// under one write-lock hold, so they observe a single instant and are atomic
+// with respect to garbage collection: a commit that lands first protects
+// every member, and a sweep that lands first makes the traversal fail. A
+// failure stores nothing. created is true when no valid record was in force
+// at now. The returned string is empty on success or the error code to
+// report: object_not_found, invalid_directory, recursive_pin_target_missing
+// or recursive_pin_too_large.
+func (s *store) setRecursivePin(cid string, expiresAt *time.Time, now time.Time) (rp recursivePin, created bool, code string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	root, ok := s.objects[cid]
+	if !ok {
+		return recursivePin{}, false, "object_not_found"
+	}
+	rootEntries, valid := parseDirectory(root.body())
+	if !valid {
+		return recursivePin{}, false, "invalid_directory"
+	}
+	members := []string{cid}
+	seen := map[string]bool{cid: true}
+	totalBytes := root.size
+	var stack []recursivePinChild
+	// pushChildren queues entries in deterministic traversal order: children
+	// are visited by ascending entry name (byte order matches code-point
+	// order for valid UTF-8), so error precedence does not depend on map
+	// iteration order.
+	pushChildren := func(entries map[string]directoryEntry, depth int) {
+		sorted := make([]directoryEntry, 0, len(entries))
+		for _, e := range entries {
+			sorted = append(sorted, e)
+		}
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].name < sorted[j].name })
+		for i := len(sorted) - 1; i >= 0; i-- {
+			stack = append(stack, recursivePinChild{entry: sorted[i], depth: depth})
+		}
+	}
+	pushChildren(rootEntries, 1)
+	for len(stack) > 0 {
+		c := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[c.entry.cid] {
+			// Already a member: shared subtrees and cycles count once.
+			continue
+		}
+		if c.depth > maxRecursivePinDepth {
+			return recursivePin{}, false, "recursive_pin_too_large"
+		}
+		obj := s.objects[c.entry.cid]
+		if obj == nil {
+			return recursivePin{}, false, "recursive_pin_target_missing"
+		}
+		seen[c.entry.cid] = true
+		members = append(members, c.entry.cid)
+		if len(members) > maxRecursivePinMembers {
+			return recursivePin{}, false, "recursive_pin_too_large"
+		}
+		totalBytes += obj.size
+		if c.entry.typ == "directory" {
+			entries, valid := parseDirectory(obj.body())
+			if !valid {
+				return recursivePin{}, false, "invalid_directory"
+			}
+			pushChildren(entries, c.depth+1)
+		}
+	}
+	sort.Strings(members)
+	existing, found := s.recursivePins[cid]
+	created = !found || !validRecursivePin(existing, now)
+	rp = recursivePin{expiresAt: expiresAt, members: members, bytes: totalBytes}
+	s.recursivePins[cid] = rp
+	return rp, created, ""
+}
+
+// recursivePinAt returns the record in force at now for cid, or false when
+// none exists or the record has expired.
+func (s *store) recursivePinAt(cid string, now time.Time) (recursivePin, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rp, found := s.recursivePins[cid]
+	if !found || !validRecursivePin(rp, now) {
+		return recursivePin{}, false
+	}
+	return rp, true
+}
+
+// removeRecursivePin deletes the record for cid, reporting whether a valid
+// record was in force at now. Expired records are removed lazily and
+// reported as absent. Deletion never removes the member objects and appends
+// no audit event.
+func (s *store) removeRecursivePin(cid string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rp, found := s.recursivePins[cid]
+	if !found || !validRecursivePin(rp, now) {
+		delete(s.recursivePins, cid)
+		return false
+	}
+	delete(s.recursivePins, cid)
+	return true
+}
+
+// collectGarbage removes every object retained neither by a valid direct
+// pin nor by a valid recursive pin record at now, or only counts them when
+// dryRun is true. It returns the affected cids in lexical order and the sum
+// of their body sizes. The sweep is atomic with respect to pin updates and
+// object reads.
 func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, totalBytes int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	protected := make(map[string]bool)
+	for _, rp := range s.recursivePins {
+		if !validRecursivePin(rp, now) {
+			continue
+		}
+		for _, member := range rp.members {
+			protected[member] = true
+		}
+	}
 	cids = []string{}
 	for cid, obj := range s.objects {
 		if p, pinned := s.pins[cid]; pinned && validPin(p, now) {
+			continue
+		}
+		if protected[cid] {
 			continue
 		}
 		cids = append(cids, cid)
@@ -248,6 +392,11 @@ func (s *store) collectGarbage(now time.Time, dryRun bool) (cids []string, total
 		for cid, p := range s.pins {
 			if !validPin(p, now) {
 				delete(s.pins, cid)
+			}
+		}
+		for cid, rp := range s.recursivePins {
+			if !validRecursivePin(rp, now) {
+				delete(s.recursivePins, cid)
 			}
 		}
 	}
