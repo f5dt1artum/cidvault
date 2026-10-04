@@ -94,6 +94,16 @@ go run ./cmd/cidvault
 - 没有有效提供者返回 `404` 与 `no_provider`；所有地址均失败返回 `502` 与 `retrieval_failed`，且不留对象、块、引脚或统计变化。
 - 首个合法原文结束尝试，按普通上传语义原子写入并复用已有块：新建返回 `201` 与 `created=true`，并发请求已写入同一对象时返回 `200` 与 `created=false`，同一 CID 的并发检索至多一个 `201`。远端成功时响应另含实际采用的 `providerId` 与 `address`。导入不自动建立引脚；之后对象、清单、块与统计入口的表现与直接上传一致。检索期间使用受理时快照，记录随后到期或删除不改变本次尝试顺序。
 
+## 主动多副本复制
+
+主动多副本复制在一次请求中把本地已有对象的完整离线包并行投递到多个实例的包导入入口，入口为 `POST /v1/replications/{cid}`。请求媒体类型须为 `application/json`，正文严格为 `{"targets":[...],"required":N}`，无未知、重复或多余字段：`targets` 为 1 至 16 个互不重复、按字符串严格升序排列的绝对 `http` 或 `https` URL，路径须恰为 `/v1/bundles`，不得含用户信息、查询或片段；`required` 为 1 至目标数的整数。
+
+服务在受理时取得本地对象快照，据此生成一次完整离线包（媒体类型为 `application/vnd.cidvault.bundle+json`），并行地把同一个包 POST 到每个目标：不转发调用方认证信息、不跟随重定向，单目标 5 秒超时（含正文读取）。所有目标都会尝试，单个失败不取消其他请求；远端沿用既有包导入、去重和审计语义。目标返回 `200` 或 `201`，且响应 JSON 中 `cid` 等于源 CID、`created` 为布尔值才算成功，成功项的 `result` 依 `created` 取 `created` 或 `existing`；网络错误与超时为 `unreachable`，重定向、其他状态码或不合约响应为 `rejected`。
+
+响应为 `200`，正文含 `cid`、`required`、`succeeded`、`failed`、`metRequirement`、`results`：`succeeded`、`failed` 依次为成功与失败目标数，`results` 按 `targets` 的顺序排列，每项含 `target`、`ok`、`result`；成功数达到 `required` 时 `metRequirement` 为 `true`。成功导入不在本地回滚，未达要求也不产生其他副作用。
+
+失败语义：路径 CID 非法返回 `400` 与 `invalid_cid`；本地对象不存在（加密封装对象不在明文对象库内，等同不存在）返回 `404` 与 `object_not_found`；媒体类型缺失或不符返回 `415` 与 `unsupported_media_type`；非单个严格 JSON，或字段缺失、未知、重复、类型错误返回 `400` 与 `invalid_request`；`targets` 或 `required` 取值违规（数量越界、重复、未严格升序、非绝对 http(s) URL、路径不是 `/v1/bundles`、含用户信息/查询/片段等）返回 `422` 与 `invalid_replication_request`。上述失败在任何远端访问之前返回。该入口仅允许 `POST`，其他方法返回 `405`、`Allow: POST` 与 `method_not_allowed`。复制不改变本地对象、块、引脚、提供者或存储统计，也不写本地审计事件；既有公开入口保持不变。
+
 ## 可检索性证明
 
 可检索性证明是只读入口，调用方凭随机挑战验证本机确实持有某对象的块数据，入口为 `POST /v1/retrievability-proofs/{cid}`。请求媒体类型须为 `application/json`，正文严格为 `{"nonce":"...","samples":N}`：`nonce` 为规范 RFC 4648 标准 Base64（解码后 16 至 64 字节，解码再编码须逐字节还原输入），`samples` 为 1 至 16 的整数。

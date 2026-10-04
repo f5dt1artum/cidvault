@@ -57,6 +57,15 @@ func (s *store) getBundle(w http.ResponseWriter, r *http.Request) {
 	if obj == nil {
 		return
 	}
+	w.Header().Set("Content-Type", bundleMediaType)
+	_ = json.NewEncoder(w).Encode(exportBundle(obj))
+}
+
+// exportBundle builds the complete offline package for one object from the
+// caller's snapshot: unique manifest-referenced blocks, sorted by cid, carry
+// their raw bytes in standard Base64. The returned document is safe to share
+// between concurrent requests without touching the store.
+func exportBundle(obj *object) bundleDocument {
 	dataByCID := make(map[string][]byte, len(obj.cids))
 	for i, c := range obj.cids {
 		dataByCID[c] = obj.chunks[i]
@@ -73,8 +82,7 @@ func (s *store) getBundle(w http.ResponseWriter, r *http.Request) {
 			Data: base64.StdEncoding.EncodeToString(dataByCID[c]),
 		})
 	}
-	w.Header().Set("Content-Type", bundleMediaType)
-	_ = json.NewEncoder(w).Encode(bundleDocument{
+	return bundleDocument{
 		Version: bundleVersion,
 		Root: bundleRoot{
 			CID:       obj.cid,
@@ -83,7 +91,7 @@ func (s *store) getBundle(w http.ResponseWriter, r *http.Request) {
 			Chunks:    obj.cids,
 		},
 		Blocks: blocks,
-	})
+	}
 }
 
 // bundleRootJSON is the strictly decoded root section of an import body.

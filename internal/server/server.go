@@ -28,6 +28,7 @@ func Handler() http.Handler {
 	providers := newProviderDirectory()
 	providers.audit = audit
 	retriever := newRetriever(objects, providers)
+	replicator := newReplicator(objects)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -58,6 +59,7 @@ func Handler() http.Handler {
 	mux.HandleFunc("/v1/providers/{cid}", providers.providersByCID)
 	mux.HandleFunc("/v1/providers/{cid}/{providerId}", providers.providerByID)
 	mux.HandleFunc("/v1/retrievals/{cid}", retriever.postRetrieval)
+	mux.HandleFunc("/v1/replications/{cid}", replicator.postReplication)
 	mux.HandleFunc("/v1/retrievability-proofs/{cid}", objects.postRetrievabilityProof)
 	mux.HandleFunc("/v1/audit/events", audit.getEvents)
 
